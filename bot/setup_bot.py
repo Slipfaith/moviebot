@@ -1,9 +1,15 @@
 """Bot setup helpers."""
 
-from telegram.ext import Application, ApplicationBuilder, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from core.config import TELEGRAM_TOKEN
-from bot.handlers import handle_message
+from bot.handlers import add_command, handle_message, help_command, start_command
 
 
 class _PatchedApplication(Application):
@@ -27,5 +33,9 @@ def create_bot():
         builder.application_class(_PatchedApplication)
 
     app = builder.token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("add", add_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return app
