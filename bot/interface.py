@@ -7,5 +7,6 @@ def get_main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📜 Последние добавления", callback_data="list_films")],
         [InlineKeyboardButton("🎭 Поиск по жанру", callback_data="search_genre")],
         [InlineKeyboardButton("📊 Статистика по оценкам", callback_data="rating_stats")],
+        [InlineKeyboardButton("ℹ️ Как добавить оффлайн", callback_data="offline_help")],
     ]
     return InlineKeyboardMarkup(keyboard)

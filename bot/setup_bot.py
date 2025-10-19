@@ -17,6 +17,7 @@ from bot.handlers import (
     handle_callback,
     handle_message,
     help_command,
+    menu_command,
     recent_command,
     start_command,
     top_command,
@@ -47,6 +48,7 @@ def create_bot():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("find", find_command))
     app.add_handler(CommandHandler("top", top_command))
