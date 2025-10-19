@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 
 from core.config import TELEGRAM_TOKEN
+from core.offline_queue import flush_offline_entries
 from bot.handlers import (
     add_command,
     find_command,
@@ -52,4 +53,9 @@ def create_bot():
     app.add_handler(CommandHandler("recent", recent_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    processed = flush_offline_entries()
+    if processed:
+        print(f"⬆️ Синхронизировал {processed} оффлайн-записи(ей) в таблицу.")
+
     return app
