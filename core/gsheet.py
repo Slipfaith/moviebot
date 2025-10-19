@@ -9,7 +9,9 @@ def connect_to_sheet():
     sh = gc.open(GOOGLE_SHEET_NAME)
     return sh.sheet1
 
-def add_movie_row(worksheet, film, year, genre, rating, comment, entry_type):
+def add_movie_row(
+    worksheet, film, year, genre, rating, comment, entry_type, recommendation
+):
     worksheet.append_row([
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         film,
@@ -18,6 +20,7 @@ def add_movie_row(worksheet, film, year, genre, rating, comment, entry_type):
         rating,
         comment,
         entry_type,
+        recommendation,
     ])
 
 

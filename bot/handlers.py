@@ -13,6 +13,7 @@ from core.gsheet import (
     recent_entries,
     top_by_rating,
 )
+from core.normalization import normalize_recommendation, normalize_type
 from bot.interface import get_main_menu
 
 HELP_TEXT = (
@@ -23,8 +24,9 @@ HELP_TEXT = (
     "• /top n=<число> — топ фильмов по оценке\n"
     "• /recent — что добавлено за последний месяц\n"
     "\nТакже можно отправить строку в формате:\n"
-    "Название | Год | Жанр | Оценка | Комментарий | Тип\n"
-    "Комментарий можно пропустить словом 'пропустить'."
+    "Название | Год | Жанр | Оценка | Комментарий | Тип | Реки\n"
+    "Комментарий можно пропустить словом 'пропустить'.\n"
+    "Реки — одна из опций: рекомендую, можно посмотреть, в топку."
 )
 
 
@@ -51,15 +53,6 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.effective_chat.send_message("🎬 Введите название фильма:")
 
 
-def _normalize_type(value: str) -> str:
-    lowered = (value or "").strip().lower()
-    if lowered.startswith("сериал"):
-        return "сериал"
-    if lowered.startswith("series"):
-        return "сериал"
-    return "фильм"
-
-
 def _format_entry(row: Dict[str, str]) -> str:
     """Return short human readable description of a movie entry."""
 
@@ -67,9 +60,15 @@ def _format_entry(row: Dict[str, str]) -> str:
     year = row.get("Год") or row.get("Year") or "—"
     rating = row.get("Оценка") or row.get("Rating") or "—"
     entry_type = row.get("Тип") or row.get("Type") or "фильм"
-    entry_type = _normalize_type(entry_type)
+    entry_type = normalize_type(entry_type)
     genre = row.get("Жанр") or row.get("Genre") or "—"
-    return f"{name} ({year}) — {rating}/10 • {entry_type} • {genre}"
+    recommendation = (
+        row.get("Реки")
+        or row.get("Рекомендация")
+        or row.get("Recommendation")
+        or "—"
+    )
+    return f"{name} ({year}) — {rating}/10 • {entry_type} • {genre} • {recommendation}"
 
 
 async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
@@ -83,7 +82,8 @@ async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
         movie_data["genre"],
         movie_data["rating"],
         movie_data.get("comment", ""),
-        _normalize_type(movie_data.get("type", "фильм")),
+        normalize_type(movie_data.get("type", "фильм")),
+        normalize_recommendation(movie_data.get("recommendation", "можно посмотреть")),
     )
 
     confirmation = (
@@ -92,8 +92,9 @@ async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
         f"Год: {movie_data['year']}\n"
         f"Жанр: {movie_data['genre']}\n"
         f"Оценка: {movie_data['rating']}/10\n"
-        f"Тип: {_normalize_type(movie_data.get('type', 'фильм'))}\n"
-        f"Комментарий: {movie_data.get('comment', '—') or '—'}"
+        f"Тип: {normalize_type(movie_data.get('type', 'фильм'))}\n"
+        f"Комментарий: {movie_data.get('comment', '—') or '—'}\n"
+        f"Рекомендация: {normalize_recommendation(movie_data.get('recommendation'))}"
     )
     await update.effective_chat.send_message(confirmation, reply_markup=get_main_menu())
 
@@ -105,6 +106,20 @@ def _type_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🎞️ Фильм", callback_data="type:фильм"),
                 InlineKeyboardButton("📺 Сериал", callback_data="type:сериал"),
             ]
+        ]
+    )
+
+
+def _recommendation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔥 Рекомендую", callback_data="recommendation:рекомендую")],
+            [
+                InlineKeyboardButton(
+                    "🙂 Можно посмотреть", callback_data="recommendation:можно посмотреть"
+                )
+            ],
+            [InlineKeyboardButton("🗑 В топку", callback_data="recommendation:в топку")],
         ]
     )
 
@@ -243,14 +258,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
+        if step == "recommendation":
+            await update.message.reply_text(
+                "Выберите рекомендацию с помощью кнопок ниже.",
+                reply_markup=_recommendation_keyboard(),
+            )
+            return
+
     if "|" in message_text:
         parts = [p.strip() for p in message_text.split("|")]
         if len(parts) >= 4:
-            film, year, genre, rating, *rest = parts + [""]
+            film, year, genre, rating, *rest = parts + ["", "", ""]
             comment = rest[0] if rest else ""
-            entry_type = _normalize_type(rest[1] if len(rest) > 1 else "фильм")
+            entry_type = normalize_type(rest[1] if len(rest) > 1 else "фильм")
+            recommendation = normalize_recommendation(rest[2] if len(rest) > 2 else "")
             worksheet = connect_to_sheet()
-            add_movie_row(worksheet, film, year, genre, rating, comment, entry_type)
+            add_movie_row(
+                worksheet,
+                film,
+                year,
+                genre,
+                rating,
+                comment,
+                entry_type,
+                recommendation,
+            )
             await update.message.reply_text(
                 f"✅ Добавил фильм: {film} ({year}) — {rating}/10"
             )
@@ -319,9 +351,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         movie_data = user_session.get("data", {})
-        movie_data["type"] = _normalize_type(entry_type)
+        movie_data["type"] = normalize_type(entry_type)
+        user_session["step"] = "recommendation"
+        await query.edit_message_text(
+            "Тип выбран! Теперь укажите, рекомендуете ли вы фильм.",
+            reply_markup=_recommendation_keyboard(),
+        )
+        return
+
+    if data.startswith("recommendation:"):
+        recommendation = data.split(":", 1)[1]
+        user_session = context.user_data.get("add_movie")
+        if not user_session:
+            await query.edit_message_text(
+                "Сессия добавления не найдена. Попробуйте снова через /add.",
+                reply_markup=get_main_menu(),
+            )
+            return
+        movie_data = user_session.get("data", {})
+        movie_data["recommendation"] = normalize_recommendation(recommendation)
         context.user_data.pop("add_movie", None)
-        await query.edit_message_text("Тип выбран! Сохраняю запись…")
+        await query.edit_message_text("Сохраняю запись…")
         await _finish_movie_entry(update, movie_data)
         return
 
