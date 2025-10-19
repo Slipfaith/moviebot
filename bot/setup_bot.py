@@ -3,13 +3,23 @@
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
 )
 
 from core.config import TELEGRAM_TOKEN
-from bot.handlers import add_command, handle_message, help_command, start_command
+from bot.handlers import (
+    add_command,
+    find_command,
+    handle_callback,
+    handle_message,
+    help_command,
+    recent_command,
+    start_command,
+    top_command,
+)
 
 
 class _PatchedApplication(Application):
@@ -37,5 +47,9 @@ def create_bot():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("add", add_command))
+    app.add_handler(CommandHandler("find", find_command))
+    app.add_handler(CommandHandler("top", top_command))
+    app.add_handler(CommandHandler("recent", recent_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     return app
