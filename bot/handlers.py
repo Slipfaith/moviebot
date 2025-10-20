@@ -205,6 +205,12 @@ def _recommendation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _skip_keyboard(step: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⏭ Пропустить", callback_data=f"skip:{step}")]]
+    )
+
+
 def _owner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -288,12 +294,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             data["film"] = message_text
             user_session["step"] = "year"
-            await update.message.reply_text("📅 Введите год выхода (например, 2023):")
+            await update.message.reply_text(
+                "📅 Введите год выхода (например, 2023):",
+                reply_markup=_skip_keyboard("year"),
+            )
             return
 
         if step == "year":
             if not message_text.isdigit() or len(message_text) != 4:
-                await update.message.reply_text("Укажите год числом из четырёх цифр.")
+                await update.message.reply_text(
+                    "Укажите год числом из четырёх цифр.", reply_markup=_skip_keyboard("year")
+                )
                 return
 
             data["year"] = message_text
@@ -326,7 +337,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             data["rating"] = f"{rating_value:g}"
             user_session["step"] = "comment"
             await update.message.reply_text(
-                "📝 Общий комментарий (или напишите 'пропустить'):"
+                "📝 Общий комментарий (или напишите 'пропустить'):",
+                reply_markup=_skip_keyboard("comment"),
             )
             return
 
@@ -439,6 +451,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if data == "offline_help":
         await query.edit_message_text(OFFLINE_GUIDE_TEXT, reply_markup=get_main_menu())
+        return
+
+    if data.startswith("skip:"):
+        skipped_step = data.split(":", 1)[1]
+        user_session = context.user_data.get("add_movie")
+        if not user_session:
+            await query.edit_message_text(
+                "Сессия добавления не найдена. Попробуйте снова через /add.",
+                reply_markup=get_main_menu(),
+            )
+            return
+
+        movie_data = user_session.get("data", {})
+
+        if skipped_step == "year":
+            movie_data["year"] = ""
+            user_session["step"] = "genre"
+            await query.edit_message_text("⏭ Год пропущен.")
+            await update.effective_chat.send_message(
+                "🎭 Укажите жанр (можно несколько через запятую):"
+            )
+            return
+
+        if skipped_step == "comment":
+            movie_data["comment"] = ""
+            user_session["step"] = "type"
+            await query.edit_message_text("⏭ Комментарий пропущен.")
+            await update.effective_chat.send_message(
+                "Что вы добавляете?", reply_markup=_type_keyboard()
+            )
+            return
+
+        await query.edit_message_text(
+            "Неизвестный шаг для пропуска. Попробуйте снова.",
+            reply_markup=get_main_menu(),
+        )
         return
 
     if data.startswith("type:"):
