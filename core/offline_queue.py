@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from core.gsheet import add_movie_row, connect_to_sheet
-from core.normalization import normalize_recommendation, normalize_type
+from core.normalization import normalize_owner, normalize_recommendation, normalize_type
 
 _QUEUE_FILE = Path(__file__).resolve().parent.parent / "data" / "offline_entries.json"
 
@@ -46,6 +46,7 @@ def add_offline_entry(entry: Dict[str, str]) -> None:
             "recommendation": normalize_recommendation(
                 entry.get("recommendation", "можно посмотреть")
             ),
+            "owner": normalize_owner(entry.get("owner", "")),
         }
     )
     _write_queue(entries)
@@ -69,6 +70,7 @@ def flush_offline_entries() -> int:
             entry.get("comment", ""),
             normalize_type(entry.get("type")),
             normalize_recommendation(entry.get("recommendation")),
+            normalize_owner(entry.get("owner")),
         )
 
     _QUEUE_FILE.unlink(missing_ok=True)

@@ -1,6 +1,6 @@
 """Telegram bot handlers."""
 
-from typing import Dict, Iterable
+from typing import Dict, Iterable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -13,7 +13,11 @@ from core.gsheet import (
     recent_entries,
     top_by_rating,
 )
-from core.normalization import normalize_recommendation, normalize_type
+from core.normalization import (
+    normalize_owner,
+    normalize_recommendation,
+    normalize_type,
+)
 from bot.interface import get_main_menu
 
 HELP_TEXT = (
@@ -25,7 +29,7 @@ HELP_TEXT = (
     "• /top n=<число> — топ фильмов по оценке\n"
     "• /recent — что добавлено за последний месяц\n"
     "\nЕсли бот временно оффлайн, вы всё равно можете отправить сообщение вида:\n"
-    "Название | Год | Жанр | Оценка | Комментарий | Тип | Реки\n"
+    "Название\nГод\nЖанр\nОценка\nКомментарий\nТип\nРеки\n"
     "Когда бот вернётся онлайн, он обработает такие записи автоматически.\n"
     "Комментарий можно пропустить словом 'пропустить'.\n"
     "Реки — одна из опций: рекомендую, можно посмотреть, в топку."
@@ -34,7 +38,8 @@ HELP_TEXT = (
 OFFLINE_GUIDE_TEXT = (
     "📥 Офлайн добавление записей:\n\n"
     "1. Отправьте сообщение в чат даже если бот оффлайн.\n"
-    "2. Используйте формат: Название | Год | Жанр | Оценка | Комментарий | Тип | Реки.\n"
+    "2. Используйте формат из семи строк:\n"
+    "   Название\n   Год\n   Жанр\n   Оценка\n   Комментарий\n   Тип\n   Реки\n"
     "3. Комментарий можно пропустить словом 'пропустить'.\n"
     "4. Тип — фильм или сериал.\n"
     "5. Рекомендация: рекомендую, можно посмотреть, в топку.\n\n"
@@ -88,7 +93,61 @@ def _format_entry(row: Dict[str, str]) -> str:
         or row.get("Recommendation")
         or "—"
     )
-    return f"{name} ({year}) — {rating}/10 • {entry_type} • {genre} • {recommendation}"
+    owner = row.get("Чье") or row.get("Owner") or ""
+    owner_part = f" • нашёл: {owner}" if owner else ""
+    return (
+        f"{name} ({year}) — {rating}/10 • {entry_type} • {genre} • {recommendation}" + owner_part
+    )
+
+
+def _normalize_rating_text(value: str) -> str:
+    normalized = value.replace(",", ".")
+    try:
+        return f"{float(normalized):g}"
+    except ValueError:
+        return value
+
+
+def _parse_offline_submission(message_text: str) -> Optional[Dict[str, str]]:
+    lines = [line.strip() for line in message_text.splitlines() if line.strip()]
+    if len(lines) >= 7:
+        film, year, genre, rating, comment, entry_type, recommendation, *rest = lines + [""]
+        if comment.lower() in {"пропустить", "skip", "-"}:
+            comment = ""
+        owner = normalize_owner(rest[0]) if rest else ""
+        return {
+            "film": film,
+            "year": year,
+            "genre": genre,
+            "rating": _normalize_rating_text(rating),
+            "comment": comment,
+            "type": normalize_type(entry_type),
+            "recommendation": normalize_recommendation(recommendation),
+            "owner": owner,
+        }
+
+    if "|" in message_text:
+        parts = [p.strip() for p in message_text.split("|")]
+        if len(parts) >= 4:
+            film, year, genre, rating, *rest = parts + ["", "", "", ""]
+            comment = rest[0] if rest else ""
+            if comment.lower() in {"пропустить", "skip", "-"}:
+                comment = ""
+            entry_type = normalize_type(rest[1] if len(rest) > 1 else "фильм")
+            recommendation = normalize_recommendation(rest[2] if len(rest) > 2 else "")
+            owner = normalize_owner(rest[3] if len(rest) > 3 else "")
+            return {
+                "film": film,
+                "year": year,
+                "genre": genre,
+                "rating": _normalize_rating_text(rating),
+                "comment": comment,
+                "type": entry_type,
+                "recommendation": recommendation,
+                "owner": owner,
+            }
+
+    return None
 
 
 async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
@@ -104,6 +163,7 @@ async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
         movie_data.get("comment", ""),
         normalize_type(movie_data.get("type", "фильм")),
         normalize_recommendation(movie_data.get("recommendation", "можно посмотреть")),
+        normalize_owner(movie_data.get("owner")),
     )
 
     confirmation = (
@@ -114,7 +174,8 @@ async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
         f"Оценка: {movie_data['rating']}/10\n"
         f"Тип: {normalize_type(movie_data.get('type', 'фильм'))}\n"
         f"Комментарий: {movie_data.get('comment', '—') or '—'}\n"
-        f"Рекомендация: {normalize_recommendation(movie_data.get('recommendation'))}"
+        f"Рекомендация: {normalize_recommendation(movie_data.get('recommendation'))}\n"
+        f"Чьё: {normalize_owner(movie_data.get('owner')) or '—'}"
     )
     await update.effective_chat.send_message(confirmation, reply_markup=get_main_menu())
 
@@ -140,6 +201,16 @@ def _recommendation_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton("🗑 В топку", callback_data="recommendation:в топку")],
+        ]
+    )
+
+
+def _owner_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("👨 Муж", callback_data="owner:муж")],
+            [InlineKeyboardButton("👩 Жена", callback_data="owner:жена")],
+            [InlineKeyboardButton("⏭ Пропустить", callback_data="owner:")],
         ]
     )
 
@@ -284,29 +355,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 reply_markup=_recommendation_keyboard(),
             )
             return
-
-    if "|" in message_text:
-        parts = [p.strip() for p in message_text.split("|")]
-        if len(parts) >= 4:
-            film, year, genre, rating, *rest = parts + ["", "", ""]
-            comment = rest[0] if rest else ""
-            entry_type = normalize_type(rest[1] if len(rest) > 1 else "фильм")
-            recommendation = normalize_recommendation(rest[2] if len(rest) > 2 else "")
-            worksheet = connect_to_sheet()
-            add_movie_row(
-                worksheet,
-                film,
-                year,
-                genre,
-                rating,
-                comment,
-                entry_type,
-                recommendation,
-            )
+        if step == "owner":
             await update.message.reply_text(
-                f"✅ Добавил фильм: {film} ({year}) — {rating}/10"
+                "Выберите, кто нашёл фильм, с помощью кнопок ниже.",
+                reply_markup=_owner_keyboard(),
             )
             return
+
+    submission = _parse_offline_submission(message_text)
+    if submission:
+        worksheet = connect_to_sheet()
+        add_movie_row(
+            worksheet,
+            submission["film"],
+            submission["year"],
+            submission["genre"],
+            submission["rating"],
+            submission["comment"],
+            submission["type"],
+            submission["recommendation"],
+            submission["owner"],
+        )
+        owner_note = (
+            f"\nЧьё: {submission['owner']}" if submission.get("owner") else ""
+        )
+        await update.message.reply_text(
+            f"✅ Добавил фильм: {submission['film']} ({submission['year']}) — {submission['rating']}/10"
+            + owner_note
+        )
+        return
 
     lowered = message_text.lower()
     if "покажи" in lowered and "месяц" in lowered:
@@ -393,6 +470,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         movie_data = user_session.get("data", {})
         movie_data["recommendation"] = normalize_recommendation(recommendation)
+        user_session["step"] = "owner"
+        await query.edit_message_text(
+            "Кто нашёл фильм?",
+            reply_markup=_owner_keyboard(),
+        )
+        return
+
+    if data.startswith("owner:"):
+        owner = data.split(":", 1)[1]
+        user_session = context.user_data.get("add_movie")
+        if not user_session:
+            await query.edit_message_text(
+                "Сессия добавления не найдена. Попробуйте снова через /add.",
+                reply_markup=get_main_menu(),
+            )
+            return
+        movie_data = user_session.get("data", {})
+        movie_data["owner"] = normalize_owner(owner)
         context.user_data.pop("add_movie", None)
         await query.edit_message_text("Сохраняю запись…")
         await _finish_movie_entry(update, movie_data)
