@@ -1,6 +1,7 @@
 """Telegram bot handlers."""
 
-from typing import Dict, Iterable, Optional
+from io import BytesIO
+from typing import Dict, Iterable, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -19,6 +20,10 @@ from core.normalization import (
     normalize_type,
 )
 from bot.interface import get_main_menu
+from ocr import get_default_ocr
+
+
+poster_ocr = get_default_ocr()
 
 HELP_TEXT = (
     "Доступные команды:\n"
@@ -281,6 +286,49 @@ async def _handle_recent_command(
     if len(last_rows) > 10:
         lines.append(f"… и ещё {len(last_rows) - 10}")
     await update.message.reply_text("\n".join(lines))
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Extract a movie title from a poster photo using OCR."""
+
+    if not update.message or not update.message.photo:
+        return
+
+    photo = update.message.photo[-1]
+    try:
+        telegram_file = await photo.get_file()
+        buffer = BytesIO()
+        await telegram_file.download_to_memory(buffer)
+    except Exception:  # pragma: no cover - network errors are rare
+        if context.application and context.application.logger:
+            context.application.logger.exception("Failed to download photo for OCR")
+        await update.message.reply_text(
+            "Не получилось скачать изображение. Попробуйте отправить его ещё раз."
+        )
+        return
+
+    candidates: List[str] = poster_ocr.extract_candidates(buffer.getvalue())
+    if not candidates:
+        await update.message.reply_text(
+            "Я не смог разобрать название на постере. Попробуйте более чёткое фото."
+        )
+        return
+
+    best_guess = candidates[0]
+    context.user_data["add_movie"] = {"step": "year", "data": {"film": best_guess}}
+
+    extra = ""
+    if len(candidates) > 1:
+        extra = "\n\nДругие варианты: " + ", ".join(f"«{item}»" for item in candidates[1:3])
+
+    await update.message.reply_text(
+        (
+            f"📷 Похоже, это «{best_guess}».\n"
+            "Я сохранил название. Теперь укажите год выхода (например, 2023)."
+            + extra
+        ),
+        reply_markup=_skip_keyboard("year"),
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
