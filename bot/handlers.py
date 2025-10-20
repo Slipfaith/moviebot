@@ -211,6 +211,12 @@ def _skip_keyboard(step: str) -> InlineKeyboardMarkup:
     )
 
 
+def _comment_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⏭ Пропустить комментарий", callback_data="skip:comment")]]
+    )
+
+
 def _owner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -337,8 +343,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             data["rating"] = f"{rating_value:g}"
             user_session["step"] = "comment"
             await update.message.reply_text(
-                "📝 Общий комментарий (или напишите 'пропустить'):",
-                reply_markup=_skip_keyboard("comment"),
+                "📝 Общий комментарий (или нажмите кнопку 'Пропустить'):",
+                reply_markup=_comment_keyboard(),
             )
             return
 
