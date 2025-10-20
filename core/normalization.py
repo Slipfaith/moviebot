@@ -25,3 +25,14 @@ def normalize_recommendation(value: Optional[str]) -> str:
     if lowered in {"ok", "okey", "okay"}:
         return "можно посмотреть"
     return "можно посмотреть"
+
+
+def normalize_owner(value: Optional[str]) -> str:
+    """Normalize owner flag to either ``муж`` or ``жена`` (or empty)."""
+
+    lowered = (value or "").strip().lower()
+    if lowered.startswith("муж"):
+        return "муж"
+    if lowered.startswith("жен"):
+        return "жена"
+    return ""

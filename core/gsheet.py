@@ -10,7 +10,15 @@ def connect_to_sheet():
     return sh.sheet1
 
 def add_movie_row(
-    worksheet, film, year, genre, rating, comment, entry_type, recommendation
+    worksheet,
+    film,
+    year,
+    genre,
+    rating,
+    comment,
+    entry_type,
+    recommendation,
+    owner,
 ):
     worksheet.append_row([
         datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -21,6 +29,7 @@ def add_movie_row(
         comment,
         entry_type,
         recommendation,
+        owner,
     ])
 
 

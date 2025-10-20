@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from core.offline_queue import add_offline_entry
-from core.normalization import normalize_recommendation, normalize_type
+from core.normalization import (
+    normalize_owner,
+    normalize_recommendation,
+    normalize_type,
+)
 
 
 def _prompt(prompt: str, validator=None, transform=None, default: str | None = None) -> str:
@@ -53,6 +57,13 @@ def _prompt_recommendation() -> str:
     return normalize_recommendation(mapping.get(value, value or "можно посмотреть"))
 
 
+def _prompt_owner() -> str:
+    print("Кто нашёл фильм? 1 — муж, 2 — жена. Можно оставить пустым.")
+    value = input("Выбор [1/2]: ").strip()
+    mapping = {"1": "муж", "2": "жена"}
+    return normalize_owner(mapping.get(value, value))
+
+
 def main() -> None:
     print("Добавление фильма в оффлайн-режиме. Нажмите Ctrl+C для отмены.")
     film = _prompt("Название: ")
@@ -60,8 +71,11 @@ def main() -> None:
     genre = _prompt("Жанр: ")
     rating = _prompt_rating()
     comment = input("Комментарий (можно оставить пустым): ").strip()
+    if comment.lower() in {"пропустить", "skip", "-"}:
+        comment = ""
     entry_type = _prompt_type()
     recommendation = _prompt_recommendation()
+    owner = _prompt_owner()
 
     add_offline_entry(
         {
@@ -72,6 +86,7 @@ def main() -> None:
             "comment": comment,
             "type": entry_type,
             "recommendation": recommendation,
+            "owner": owner,
         }
     )
     print("✅ Запись сохранена локально и будет выгружена при следующем запуске бота.")
