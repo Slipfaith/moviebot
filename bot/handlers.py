@@ -1,5 +1,7 @@
 """Telegram bot handlers."""
 
+from pathlib import Path
+import tempfile
 from typing import Dict, Iterable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -19,6 +21,7 @@ from core.normalization import (
     normalize_type,
 )
 from bot.interface import get_main_menu
+from ocr import recognize_poster_title
 
 HELP_TEXT = (
     "Доступные команды:\n"
@@ -281,6 +284,60 @@ async def _handle_recent_command(
     if len(last_rows) > 10:
         lines.append(f"… и ещё {len(last_rows) - 10}")
     await update.message.reply_text("\n".join(lines))
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Распознать текст на фото постера и подсказать название фильма."""
+
+    message = update.message
+    if not message or not message.photo:
+        return
+
+    photo = message.photo[-1]
+
+    try:
+        file = await photo.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as temp_file:
+            await file.download_to_drive(destination=Path(temp_file.name))
+            result = recognize_poster_title(Path(temp_file.name))
+    except Exception as exc:  # pragma: no cover - defensive user feedback
+        await message.reply_text(
+            "⚠️ Не удалось обработать изображение. Попробуйте ещё раз позже." \
+            f"\nТехническая подробность: {exc}"
+        )
+        return
+
+    user_session = context.user_data.get("add_movie")
+    response_lines = []
+
+    if result.has_confident_title():
+        response_lines.append(f"🎞️ Похоже, это: {result.title}")
+
+        if user_session and user_session.get("step") == "film":
+            movie_data = user_session.setdefault("data", {})
+            movie_data["film"] = result.title
+            user_session["step"] = "year"
+            response_lines.append(
+                "Название автоматически подставлено в карточку. "
+                "Теперь укажите год выхода."
+            )
+            await message.reply_text("\n".join(response_lines))
+            await message.reply_text(
+                "📅 Введите год выхода (например, 2023):",
+                reply_markup=_skip_keyboard("year"),
+            )
+            return
+    else:
+        response_lines.append(
+            "Не удалось распознать название фильма на постере. "
+            "Попробуйте отправить более чёткое изображение."
+        )
+
+    if result.candidates:
+        preview = ", ".join(result.candidates[:3])
+        response_lines.append(f"📖 Распознанный текст: {preview}")
+
+    await message.reply_text("\n".join(response_lines))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
