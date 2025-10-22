@@ -31,7 +31,13 @@ class PosterOCR:
         if self.local_client:
             return None
         if self._reader is None:
-            import easyocr  # imported lazily to speed up cold starts
+            try:
+                import easyocr  # imported lazily to speed up cold starts
+            except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
+                raise RuntimeError(
+                    "EasyOCR backend is not available. Install the 'easyocr' "
+                    "dependency or configure OCR_LOCAL_URL for a local OCR service."
+                ) from exc
 
             self._reader = easyocr.Reader(list(self.languages), gpu=self.gpu)
         return self._reader
