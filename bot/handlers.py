@@ -307,7 +307,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    candidates: List[str] = poster_ocr.extract_candidates(buffer.getvalue())
+    try:
+        candidates: List[str] = poster_ocr.extract_candidates(buffer.getvalue())
+    except RuntimeError as exc:
+        logger = getattr(context.application, "logger", None)
+        if logger:
+            logger.exception("Failed to initialize OCR backend: %s", exc)
+        await update.message.reply_text(
+            "Обработка постеров временно недоступна: отсутствуют зависимости OCR."
+            " Сообщите администратору бота."
+        )
+        return
     if not candidates:
         await update.message.reply_text(
             "Я не смог разобрать название на постере. Попробуйте более чёткое фото."
