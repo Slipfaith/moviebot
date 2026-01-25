@@ -7,13 +7,19 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from core.gsheet import (
+    add_movie_row,
     connect_to_sheet,
     fetch_records,
     filter_by_genre,
     recent_entries,
     top_by_rating,
 )
-from core.normalization import normalize_owner, normalize_type
+from core.normalization import (
+    normalize_owner,
+    normalize_recommendation,
+    normalize_type,
+)
+from core.offline_queue import add_offline_entry
 from bot.interface import get_main_menu
 
 
@@ -28,6 +34,13 @@ HELP_TEXT = (
 )
 
 OFFLINE_GUIDE_TEXT = "Если таблица недоступна, записи сохраняются оффлайн."
+ADD_USAGE_TEXT = (
+    "Чтобы добавить запись, используйте формат:\n"
+    "/add Название;Год;Жанр;Оценка;Комментарий;Тип;Рекомендация;Владелец\n"
+    "Комментарий, тип, рекомендация и владелец — опционально.\n"
+    "Пример:\n"
+    "/add Интерстеллар;2014;фантастика;9;Шикарный саундтрек;фильм;рекомендую;муж"
+)
 
 
 # -------------------- utils --------------------
@@ -73,6 +86,55 @@ def _format_entry(row: Dict[str, str]) -> str:
     return f"{name} ({year}) — {rating}/10 • {entry_type} • {genre}{owner_part}"
 
 
+def _extract_add_payload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    if context.args:
+        return " ".join(context.args).strip()
+    if update.message and update.message.text:
+        text = update.message.text
+        if text.startswith("/add"):
+            return text.partition(" ")[2].strip()
+    return ""
+
+
+def _parse_add_payload(payload: str) -> Dict[str, str]:
+    parts = [part.strip() for part in payload.split(";")]
+    if len(parts) < 4:
+        raise ValueError("missing_fields")
+
+    if len(parts) > 8:
+        comment = ";".join(parts[4:-3]).strip()
+        parts = parts[:4] + [comment] + parts[-3:]
+
+    while len(parts) < 8:
+        parts.append("")
+
+    film, year, genre, rating, comment, entry_type, recommendation, owner = parts[:8]
+
+    if not film or not year or not genre or not rating:
+        raise ValueError("missing_fields")
+    if not (year.isdigit() and len(year) == 4):
+        raise ValueError("invalid_year")
+    try:
+        rating_value = float(rating.replace(",", "."))
+    except ValueError as exc:
+        raise ValueError("invalid_rating") from exc
+    if not (1 <= rating_value <= 10):
+        raise ValueError("invalid_rating")
+
+    normalized_rating = f"{rating_value:g}"
+
+    return {
+        "film": film,
+        "year": year,
+        "genre": genre,
+        "rating": normalized_rating,
+        "comment": comment,
+        "type": normalize_type(entry_type),
+        "recommendation": normalize_recommendation(recommendation),
+        "owner": normalize_owner(owner),
+    }
+
+
 # -------------------- commands --------------------
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -88,7 +150,44 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _send(update, "Добавление временно отключено.")
+    payload = _extract_add_payload(update, context)
+    if not payload:
+        await _send(update, ADD_USAGE_TEXT)
+        return
+
+    try:
+        entry = _parse_add_payload(payload)
+    except ValueError as exc:
+        if str(exc) in {"missing_fields", "invalid_year", "invalid_rating"}:
+            await _send(update, f"Некорректные данные.\n\n{ADD_USAGE_TEXT}")
+        else:
+            await _send(update, "Не удалось разобрать данные для добавления.")
+        return
+
+    try:
+        ws = connect_to_sheet()
+        add_movie_row(
+            ws,
+            entry["film"],
+            entry["year"],
+            entry["genre"],
+            entry["rating"],
+            entry["comment"],
+            entry["type"],
+            entry["recommendation"],
+            entry["owner"],
+        )
+    except Exception as exc:
+        print("GSHEET ERROR:", type(exc).__name__, exc)
+        add_offline_entry(entry)
+        await _send(
+            update,
+            "⚠️ Сейчас нет связи с таблицей. "
+            "Запись сохранена оффлайн и будет выгружена позже.",
+        )
+        return
+
+    await _send(update, "✅ Запись добавлена в таблицу.")
 
 
 async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -156,6 +255,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "offline_help":
         await _send(update, OFFLINE_GUIDE_TEXT)
+        return
+
+    if data == "add_film":
+        await _send(update, ADD_USAGE_TEXT)
         return
 
     await update.callback_query.answer()
