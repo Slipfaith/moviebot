@@ -1,13 +1,14 @@
 """Telegram bot handlers."""
 
 from datetime import datetime
+import asyncio
 import random
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 
 from core.gsheet import (
     add_movie_row,
@@ -37,7 +38,8 @@ HELP_TEXT = (
     "• /random — случайный фильм\n"
     "• /owner <муж|жена> — подборка по владельцу\n"
     "• /menu — меню\n"
-    "• /help — помощь"
+    "• /help — помощь\n"
+    "• /cancel — отменить добавление"
 )
 
 OFFLINE_GUIDE_TEXT = "Если таблица недоступна, записи сохраняются оффлайн."
@@ -45,11 +47,25 @@ ADD_USAGE_TEXT = (
     "Чтобы добавить запись, используйте формат:\n"
     "/add Название;Год;Жанр;Оценка;Комментарий;Тип;Рекомендация;Владелец\n"
     "Комментарий, тип, рекомендация и владелец — опционально.\n"
+    "Можно также просто отправить /add и заполнить форму пошагово.\n"
     "Пример:\n"
     "/add Интерстеллар;2014;фантастика;9;Шикарный саундтрек;фильм;рекомендую;муж"
 )
 _CACHE_TTL_SECONDS = 60
 _RESPONSE_CACHE: Dict[str, Tuple[float, str]] = {}
+
+(
+    ADD_FILM,
+    ADD_YEAR,
+    ADD_GENRE,
+    ADD_RATING,
+    ADD_COMMENT,
+    ADD_TYPE,
+    ADD_RECOMMENDATION,
+    ADD_OWNER,
+) = range(8)
+
+_COMMENT_SKIP_TOKENS = {"-", "пропустить", "skip", "нет", "без"}
 
 
 # -------------------- utils --------------------
@@ -79,6 +95,13 @@ async def _send(update: Update, text: str) -> None:
             await update.callback_query.answer()
     else:
         await update.message.reply_text(text, reply_markup=get_main_menu())
+
+
+async def _reply(update: Update, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
+    if update.callback_query:
+        await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
 
 async def _notify_table_unavailable(update: Update, action: str = "запрос") -> None:
@@ -175,6 +198,69 @@ def _parse_add_payload(payload: str) -> Dict[str, str]:
     }
 
 
+async def _add_entry_to_sheet(entry: Dict[str, str]) -> Optional[Exception]:
+    last_exc: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            ws = connect_to_sheet()
+            add_movie_row(
+                ws,
+                entry["film"],
+                entry["year"],
+                entry["genre"],
+                entry["rating"],
+                entry.get("comment", ""),
+                entry.get("type", ""),
+                entry.get("recommendation", ""),
+                entry.get("owner", ""),
+            )
+            return None
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                await asyncio.sleep(1)
+    return last_exc
+
+
+def _comment_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Пропустить", callback_data="add_flow:skip_comment")]]
+    )
+
+
+def _type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Фильм", callback_data="add_flow:type:film"),
+                InlineKeyboardButton("Сериал", callback_data="add_flow:type:series"),
+            ]
+        ]
+    )
+
+
+def _recommendation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Рекомендую", callback_data="add_flow:rec:recommend")],
+            [InlineKeyboardButton("Можно посмотреть", callback_data="add_flow:rec:ok")],
+            [InlineKeyboardButton("В топку", callback_data="add_flow:rec:skip")],
+        ]
+    )
+
+
+def _owner_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Муж", callback_data="add_flow:owner:husband"),
+                InlineKeyboardButton("Жена", callback_data="add_flow:owner:wife"),
+            ],
+            [InlineKeyboardButton("Не указывать", callback_data="add_flow:owner:skip")],
+        ]
+    )
+
+
 # -------------------- commands --------------------
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -189,11 +275,12 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _send(update, "Меню:")
 
 
-async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     payload = _extract_add_payload(update, context)
     if not payload:
-        await _send(update, ADD_USAGE_TEXT)
-        return
+        context.user_data["add_flow"] = {}
+        await _reply(update, "Введите название фильма или сериала:")
+        return ADD_FILM
 
     try:
         entry = _parse_add_payload(payload)
@@ -202,32 +289,27 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _send(update, f"Некорректные данные.\n\n{ADD_USAGE_TEXT}")
         else:
             await _send(update, "Не удалось разобрать данные для добавления.")
-        return
+        return ConversationHandler.END
 
-    try:
-        ws = connect_to_sheet()
-        add_movie_row(
-            ws,
-            entry["film"],
-            entry["year"],
-            entry["genre"],
-            entry["rating"],
-            entry["comment"],
-            entry["type"],
-            entry["recommendation"],
-            entry["owner"],
-        )
-    except Exception as exc:
-        print("GSHEET ERROR:", type(exc).__name__, exc)
+    error = await _add_entry_to_sheet(entry)
+    if error:
+        print("GSHEET ERROR:", type(error).__name__, error)
         add_offline_entry(entry)
         await _send(
             update,
             "⚠️ Сейчас нет связи с таблицей. "
             "Запись сохранена оффлайн и будет выгружена позже.",
         )
-        return
+        return ConversationHandler.END
 
     await _send(update, "✅ Запись добавлена в таблицу.")
+    return ConversationHandler.END
+
+
+async def start_add_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["add_flow"] = {}
+    await _reply(update, "Введите название фильма или сериала:")
+    return ADD_FILM
 
 
 async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -443,10 +525,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _send(update, OFFLINE_GUIDE_TEXT)
         return
 
-    if data == "add_film":
-        await _send(update, ADD_USAGE_TEXT)
-        return
-
     await update.callback_query.answer()
 
 
@@ -458,3 +536,151 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send(update, "Обработка изображений отключена.")
+
+
+# -------------------- add flow --------------------
+
+async def add_flow_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    film = (update.message.text or "").strip()
+    if not film:
+        await _reply(update, "Введите название фильма или сериала:")
+        return ADD_FILM
+    context.user_data["add_flow"] = {"film": film}
+    await _reply(update, "Год выпуска (например, 2014):")
+    return ADD_YEAR
+
+
+async def add_flow_year(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    year = (update.message.text or "").strip()
+    if not (year.isdigit() and len(year) == 4):
+        await _reply(update, "Введите год из 4 цифр (например, 2014):")
+        return ADD_YEAR
+    context.user_data["add_flow"]["year"] = year
+    await _reply(update, "Жанр (например, фантастика):")
+    return ADD_GENRE
+
+
+async def add_flow_genre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    genre = (update.message.text or "").strip()
+    if not genre:
+        await _reply(update, "Введите жанр (например, фантастика):")
+        return ADD_GENRE
+    context.user_data["add_flow"]["genre"] = genre
+    await _reply(update, "Оценка от 1 до 10 (например, 8.5):")
+    return ADD_RATING
+
+
+async def add_flow_rating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    rating_raw = (update.message.text or "").strip()
+    try:
+        rating_value = float(rating_raw.replace(",", "."))
+    except ValueError:
+        rating_value = 0
+    if not (1 <= rating_value <= 10):
+        await _reply(update, "Введите число от 1 до 10 (например, 8 или 8.5):")
+        return ADD_RATING
+    context.user_data["add_flow"]["rating"] = f"{rating_value:g}"
+    await _reply(update, "Комментарий (можно пропустить):", reply_markup=_comment_keyboard())
+    return ADD_COMMENT
+
+
+async def add_flow_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    comment = (update.message.text or "").strip()
+    if comment.lower() in _COMMENT_SKIP_TOKENS:
+        comment = ""
+    context.user_data["add_flow"]["comment"] = comment
+    await _reply(update, "Тип записи:", reply_markup=_type_keyboard())
+    return ADD_TYPE
+
+
+async def add_flow_comment_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    context.user_data["add_flow"]["comment"] = ""
+    await _reply(update, "Тип записи:", reply_markup=_type_keyboard())
+    return ADD_TYPE
+
+
+async def add_flow_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    entry_type = (update.message.text or "").strip()
+    context.user_data["add_flow"]["type"] = normalize_type(entry_type)
+    await _reply(update, "Рекомендация:", reply_markup=_recommendation_keyboard())
+    return ADD_RECOMMENDATION
+
+
+async def add_flow_type_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    choice = update.callback_query.data.rsplit(":", 1)[-1]
+    entry_type = "сериал" if choice == "series" else "фильм"
+    context.user_data["add_flow"]["type"] = entry_type
+    await _reply(update, "Рекомендация:", reply_markup=_recommendation_keyboard())
+    return ADD_RECOMMENDATION
+
+
+async def add_flow_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    recommendation = (update.message.text or "").strip()
+    context.user_data["add_flow"]["recommendation"] = normalize_recommendation(recommendation)
+    await _reply(update, "Кто добавил?", reply_markup=_owner_keyboard())
+    return ADD_OWNER
+
+
+async def add_flow_recommendation_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    mapping = {
+        "recommend": "рекомендую",
+        "ok": "можно посмотреть",
+        "skip": "в топку",
+    }
+    choice = update.callback_query.data.rsplit(":", 1)[-1]
+    context.user_data["add_flow"]["recommendation"] = mapping.get(choice, "можно посмотреть")
+    await _reply(update, "Кто добавил?", reply_markup=_owner_keyboard())
+    return ADD_OWNER
+
+
+async def add_flow_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    owner = normalize_owner((update.message.text or "").strip())
+    context.user_data["add_flow"]["owner"] = owner
+    return await _finish_add_flow(update, context)
+
+
+async def add_flow_owner_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    choice = update.callback_query.data.rsplit(":", 1)[-1]
+    if choice == "husband":
+        owner = "муж"
+    elif choice == "wife":
+        owner = "жена"
+    else:
+        owner = ""
+    context.user_data["add_flow"]["owner"] = owner
+    return await _finish_add_flow(update, context)
+
+
+async def _finish_add_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    entry = context.user_data.get("add_flow", {})
+    required = ["film", "year", "genre", "rating"]
+    if not all(entry.get(key) for key in required):
+        await _send(update, "Не удалось собрать данные. Попробуйте /add заново.")
+        context.user_data.pop("add_flow", None)
+        return ConversationHandler.END
+
+    error = await _add_entry_to_sheet(entry)
+    if error:
+        print("GSHEET ERROR:", type(error).__name__, error)
+        add_offline_entry(entry)
+        await _send(
+            update,
+            "⚠️ Сейчас нет связи с таблицей. "
+            "Запись сохранена оффлайн и будет выгружена позже.",
+        )
+        context.user_data.pop("add_flow", None)
+        return ConversationHandler.END
+
+    await _send(update, "✅ Запись добавлена в таблицу.")
+    context.user_data.pop("add_flow", None)
+    return ConversationHandler.END
+
+
+async def cancel_add_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("add_flow", None)
+    await _send(update, "Добавление отменено.")
+    return ConversationHandler.END
