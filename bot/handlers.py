@@ -1,6 +1,9 @@
 """Telegram bot handlers."""
 
-from typing import Dict, Iterable, List, Optional
+from datetime import datetime
+import random
+import time
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from telegram import Update
 from telegram.error import BadRequest
@@ -29,6 +32,10 @@ HELP_TEXT = (
     "• /top — топ по оценке\n"
     "• /recent — за последний месяц\n"
     "• /find <жанр> — поиск по жанру\n"
+    "• /list — последние добавления\n"
+    "• /stats — статистика по оценкам\n"
+    "• /random — случайный фильм\n"
+    "• /owner <муж|жена> — подборка по владельцу\n"
     "• /menu — меню\n"
     "• /help — помощь"
 )
@@ -41,9 +48,26 @@ ADD_USAGE_TEXT = (
     "Пример:\n"
     "/add Интерстеллар;2014;фантастика;9;Шикарный саундтрек;фильм;рекомендую;муж"
 )
+_CACHE_TTL_SECONDS = 60
+_RESPONSE_CACHE: Dict[str, Tuple[float, str]] = {}
 
 
 # -------------------- utils --------------------
+
+def _get_cached_response(cache_key: str) -> Optional[str]:
+    cached = _RESPONSE_CACHE.get(cache_key)
+    if not cached:
+        return None
+    expires_at, text = cached
+    if time.time() <= expires_at:
+        return text
+    _RESPONSE_CACHE.pop(cache_key, None)
+    return None
+
+
+def _store_cached_response(cache_key: str, text: str) -> None:
+    _RESPONSE_CACHE[cache_key] = (time.time() + _CACHE_TTL_SECONDS, text)
+
 
 async def _send(update: Update, text: str) -> None:
     if update.callback_query:
@@ -84,6 +108,22 @@ def _format_entry(row: Dict[str, str]) -> str:
     owner = normalize_owner(row.get("Владелец") or row.get("Чье") or "")
     owner_part = f" • {owner}" if owner else ""
     return f"{name} ({year}) — {rating}/10 • {entry_type} • {genre}{owner_part}"
+
+
+def _parse_timestamp(value: str) -> Optional[datetime]:
+    for fmt in ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_rating(value: str) -> float:
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _extract_add_payload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -195,11 +235,17 @@ async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _send(update, "Использование: /find <жанр>")
         return
 
+    genre = " ".join(context.args).strip()
+    cache_key = f"find:{genre.lower()}"
+    cached = _get_cached_response(cache_key)
+    if cached:
+        await _send(update, cached)
+        return
+
     records = await _safe_fetch_records(update)
     if records is None:
         return
 
-    genre = " ".join(context.args)
     filtered = filter_by_genre(records, genre)
 
     if not filtered:
@@ -209,10 +255,16 @@ async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     text = "🔎 Найдено:\n" + "\n".join(
         _format_entry(r) for r in filtered[:10]
     )
+    _store_cached_response(cache_key, text)
     await _send(update, text)
 
 
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cached = _get_cached_response("top")
+    if cached:
+        await _send(update, cached)
+        return
+
     records = await _safe_fetch_records(update)
     if records is None:
         return
@@ -221,10 +273,16 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = "🏆 Топ:\n" + "\n".join(
         f"{i+1}. {_format_entry(r)}" for i, r in enumerate(rows)
     )
+    _store_cached_response("top", text)
     await _send(update, text)
 
 
 async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cached = _get_cached_response("recent")
+    if cached:
+        await _send(update, cached)
+        return
+
     records = await _safe_fetch_records(update)
     if records is None:
         return
@@ -232,6 +290,122 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     rows = recent_entries(records)
     text = "🗓 Последние:\n" + "\n".join(
         _format_entry(r) for r in rows[:10]
+    )
+    _store_cached_response("recent", text)
+    await _send(update, text)
+
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
+
+    stamped_rows = []
+    no_stamp = []
+    for row in records:
+        timestamp = (
+            row.get("Добавлено")
+            or row.get("Timestamp")
+            or row.get("Дата")
+            or row.get("Added")
+            or ""
+        )
+        parsed = _parse_timestamp(str(timestamp)) if timestamp else None
+        if parsed:
+            stamped_rows.append((parsed, row))
+        else:
+            no_stamp.append(row)
+
+    if stamped_rows:
+        stamped_rows.sort(key=lambda item: item[0], reverse=True)
+        ordered = [row for _, row in stamped_rows] + no_stamp
+    else:
+        ordered = list(records)
+
+    if not ordered:
+        await _send(update, "Пока нет добавленных записей.")
+        return
+
+    text = "📜 Последние добавления:\n" + "\n".join(
+        _format_entry(r) for r in ordered[:10]
+    )
+    await _send(update, text)
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
+
+    ratings = []
+    for row in records:
+        raw_rating = row.get("Оценка") or row.get("Rating") or row.get("rating")
+        rating_value = _normalize_rating(raw_rating)
+        if rating_value > 0:
+            ratings.append(rating_value)
+
+    total = len(records)
+    rated = len(ratings)
+    if rated:
+        avg_rating = sum(ratings) / rated
+        min_rating = min(ratings)
+        max_rating = max(ratings)
+        text = (
+            "📊 Статистика по оценкам:\n"
+            f"Всего записей: {total}\n"
+            f"С оценкой: {rated}\n"
+            f"Средняя: {avg_rating:.1f}/10\n"
+            f"Мин: {min_rating:.1f}/10\n"
+            f"Макс: {max_rating:.1f}/10"
+        )
+    else:
+        text = (
+            "📊 Статистика по оценкам:\n"
+            f"Всего записей: {total}\n"
+            "Пока нет оценок для расчета статистики."
+        )
+    await _send(update, text)
+
+
+async def random_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
+
+    if not records:
+        await _send(update, "Пока нет записей для случайной рекомендации.")
+        return
+
+    row = random.choice(records)
+    await _send(update, f"🎲 Случайный выбор:\n{_format_entry(row)}")
+
+
+async def owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await _send(update, "Использование: /owner <муж|жена>")
+        return
+
+    owner = normalize_owner(" ".join(context.args))
+    if not owner:
+        await _send(update, "Использование: /owner <муж|жена>")
+        return
+
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
+
+    filtered = [
+        row
+        for row in records
+        if normalize_owner(row.get("Владелец") or row.get("Чье") or "") == owner
+    ]
+
+    if not filtered:
+        await _send(update, f"Для владельца «{owner}» ничего не найдено.")
+        return
+
+    text = f"👤 Подборка ({owner}):\n" + "\n".join(
+        _format_entry(r) for r in filtered[:10]
     )
     await _send(update, text)
 
@@ -247,6 +421,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "recent_entries":
         await recent_command(update, context)
+        return
+
+    if data == "list_films":
+        await list_command(update, context)
+        return
+
+    if data == "rating_stats":
+        await stats_command(update, context)
+        return
+
+    if data == "search_genre":
+        await _send(update, "Использование: /find <жанр>")
         return
 
     if data == "help":
