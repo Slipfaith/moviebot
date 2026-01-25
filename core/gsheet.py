@@ -4,9 +4,36 @@ from typing import Iterable, List, Dict
 
 from core.config import GOOGLE_SHEET_NAME, GOOGLE_CREDENTIALS
 
+_SHEETS_URL_FRAGMENT = "docs.google.com/spreadsheets"
+
+
+def _is_sheet_url(value: str) -> bool:
+    return (
+        (value.startswith("http://") or value.startswith("https://"))
+        and _SHEETS_URL_FRAGMENT in value
+    )
+
+
+def _is_sheet_key(value: str) -> bool:
+    if " " in value or "/" in value:
+        return False
+    if len(value) < 20:
+        return False
+    return all(ch.isalnum() or ch in {"-", "_"} for ch in value)
+
 def connect_to_sheet():
+    if not GOOGLE_CREDENTIALS:
+        raise ValueError("GOOGLE_CREDENTIALS is not configured.")
+    if not GOOGLE_SHEET_NAME:
+        raise ValueError("GOOGLE_SHEET_NAME is not configured.")
+
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS)
-    sh = gc.open(GOOGLE_SHEET_NAME)
+    if _is_sheet_url(GOOGLE_SHEET_NAME):
+        sh = gc.open_by_url(GOOGLE_SHEET_NAME)
+    elif _is_sheet_key(GOOGLE_SHEET_NAME):
+        sh = gc.open_by_key(GOOGLE_SHEET_NAME)
+    else:
+        sh = gc.open(GOOGLE_SHEET_NAME)
     return sh.sheet1
 
 def add_movie_row(
