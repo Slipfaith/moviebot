@@ -9,17 +9,21 @@ _SHEETS_URL_FRAGMENT = "docs.google.com/spreadsheets"
 
 def _is_sheet_url(value: str) -> bool:
     return (
-        (value.startswith("http://") or value.startswith("https://"))
+        isinstance(value, str)
+        and value.startswith(("http://", "https://"))
         and _SHEETS_URL_FRAGMENT in value
     )
 
 
 def _is_sheet_key(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
     if " " in value or "/" in value:
         return False
     if len(value) < 20:
         return False
     return all(ch.isalnum() or ch in {"-", "_"} for ch in value)
+
 
 def connect_to_sheet():
     if not GOOGLE_CREDENTIALS:
@@ -28,13 +32,16 @@ def connect_to_sheet():
         raise ValueError("GOOGLE_SHEET_NAME is not configured.")
 
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS)
+
     if _is_sheet_url(GOOGLE_SHEET_NAME):
-        sh = gc.open_by_url(GOOGLE_SHEET_NAME)
+        spreadsheet = gc.open_by_url(GOOGLE_SHEET_NAME)
     elif _is_sheet_key(GOOGLE_SHEET_NAME):
-        sh = gc.open_by_key(GOOGLE_SHEET_NAME)
+        spreadsheet = gc.open_by_key(GOOGLE_SHEET_NAME)
     else:
-        sh = gc.open(GOOGLE_SHEET_NAME)
-    return sh.sheet1
+        spreadsheet = gc.open(GOOGLE_SHEET_NAME)
+
+    return spreadsheet.sheet1
+
 
 def add_movie_row(
     worksheet,
@@ -76,14 +83,28 @@ def _normalize_rating(value: str) -> float:
 
 
 def fetch_records(worksheet) -> List[Dict[str, str]]:
-    """Return all worksheet rows as dictionaries with column headers."""
+    try:
+        return worksheet.get_all_records()
+    except Exception:
+        values = worksheet.get_all_values()
+        if not values or len(values) < 2:
+            return []
 
-    return worksheet.get_all_records()
+        headers = [h.strip() for h in values[0]]
+        records: List[Dict[str, str]] = []
+
+        for row in values[1:]:
+            record = {}
+            for idx, header in enumerate(headers):
+                if not header:
+                    continue
+                record[header] = row[idx] if idx < len(row) else ""
+            records.append(record)
+
+        return records
 
 
 def filter_by_genre(records: Iterable[Dict[str, str]], genre_query: str) -> List[Dict[str, str]]:
-    """Filter records containing the requested genre (case insensitive)."""
-
     genre_lower = genre_query.lower()
     return [
         row
@@ -93,8 +114,6 @@ def filter_by_genre(records: Iterable[Dict[str, str]], genre_query: str) -> List
 
 
 def top_by_rating(records: Iterable[Dict[str, str]], limit: int) -> List[Dict[str, str]]:
-    """Return rows sorted by rating (desc) limited to the requested amount."""
-
     sorted_rows = sorted(
         records,
         key=lambda row: (
@@ -107,8 +126,6 @@ def top_by_rating(records: Iterable[Dict[str, str]], limit: int) -> List[Dict[st
 
 
 def recent_entries(records: Iterable[Dict[str, str]], days: int = 30) -> List[Dict[str, str]]:
-    """Return entries added during the last ``days`` days."""
-
     cutoff = datetime.now() - timedelta(days=days)
     result: List[Dict[str, str]] = []
 
