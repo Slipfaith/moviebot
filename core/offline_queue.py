@@ -112,3 +112,9 @@ def has_offline_entries() -> bool:
     """Return True when there are queued offline entries waiting for sync."""
 
     return bool(_read_queue())
+
+
+def offline_entry_count() -> int:
+    """Return the number of queued offline entries."""
+
+    return len(_read_queue())
