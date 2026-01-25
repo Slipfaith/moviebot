@@ -4,6 +4,7 @@ from io import BytesIO
 from typing import Dict, Iterable, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from core.gsheet import (
@@ -184,9 +185,19 @@ async def _notify_table_unavailable(update: Update, action: str = "операц�
         f"{action} не получилось. Попробуйте чуть позже."
     )
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            message, reply_markup=get_main_menu()
-        )
+        current_message = update.callback_query.message
+        if current_message and (current_message.text or "").strip() == message.strip():
+            await update.callback_query.answer()
+            return
+        try:
+            await update.callback_query.edit_message_text(
+                message, reply_markup=get_main_menu()
+            )
+        except BadRequest as exc:
+            if "Message is not modified" in str(exc):
+                await update.callback_query.answer()
+                return
+            raise
     elif update.message:
         await update.message.reply_text(message, reply_markup=get_main_menu())
     else:
