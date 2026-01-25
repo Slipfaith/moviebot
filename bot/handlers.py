@@ -14,6 +14,7 @@ from core.gsheet import (
     recent_entries,
     top_by_rating,
 )
+from core.offline_queue import add_offline_entry
 from core.normalization import (
     normalize_owner,
     normalize_recommendation,
@@ -37,7 +38,8 @@ HELP_TEXT = (
     "Название\nГод\nЖанр\nОценка\nКомментарий\nТип\nРеки\n"
     "Когда бот вернётся онлайн, он обработает такие записи автоматически.\n"
     "Комментарий можно пропустить словом 'пропустить'.\n"
-    "Реки — одна из опций: рекомендую, можно посмотреть, в топку."
+    "Реки — одна из опций: рекомендую, можно посмотреть, в топку.\n"
+    "Во время пошагового добавления можно выбирать оценку, тип и рекомендацию кнопками."
 )
 
 OFFLINE_GUIDE_TEXT = (
@@ -48,7 +50,8 @@ OFFLINE_GUIDE_TEXT = (
     "3. Комментарий можно пропустить словом 'пропустить'.\n"
     "4. Тип — фильм или сериал.\n"
     "5. Рекомендация: рекомендую, можно посмотреть, в топку.\n\n"
-    "Сообщение дождётся бота и будет добавлено в таблицу при следующем запуске."
+    "Сообщение дождётся бота и будет добавлено в таблицу при следующем запуске.\n"
+    "Если таблица временно недоступна, запись автоматически сохранится оффлайн."
 )
 
 
@@ -157,19 +160,9 @@ def _parse_offline_submission(message_text: str) -> Optional[Dict[str, str]]:
 
 async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
     """Добавить запись в таблицу и отправить подтверждение."""
-
-    worksheet = connect_to_sheet()
-    add_movie_row(
-        worksheet,
-        movie_data["film"],
-        movie_data["year"],
-        movie_data["genre"],
-        movie_data["rating"],
-        movie_data.get("comment", ""),
-        normalize_type(movie_data.get("type", "фильм")),
-        normalize_recommendation(movie_data.get("recommendation", "можно посмотреть")),
-        normalize_owner(movie_data.get("owner")),
-    )
+    saved = await _save_movie_entry(update, movie_data)
+    if not saved:
+        return
 
     confirmation = (
         "✅ Фильм добавлен!\n"
@@ -183,6 +176,88 @@ async def _finish_movie_entry(update: Update, movie_data: dict) -> None:
         f"Чьё: {normalize_owner(movie_data.get('owner')) or '—'}"
     )
     await update.effective_chat.send_message(confirmation, reply_markup=get_main_menu())
+
+
+async def _notify_table_unavailable(update: Update, action: str = "операцию") -> None:
+    message = (
+        "⚠️ Сейчас нет связи с таблицей, поэтому выполнить "
+        f"{action} не получилось. Попробуйте чуть позже."
+    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            message, reply_markup=get_main_menu()
+        )
+    elif update.message:
+        await update.message.reply_text(message, reply_markup=get_main_menu())
+    else:
+        await update.effective_chat.send_message(message, reply_markup=get_main_menu())
+
+
+async def _safe_fetch_records(update: Update) -> Optional[List[Dict[str, str]]]:
+    try:
+        worksheet = connect_to_sheet()
+        return fetch_records(worksheet)
+    except Exception:
+        await _notify_table_unavailable(update, "запрос")
+        return None
+
+
+def _top_summary(records: Iterable[Dict[str, str]], amount: int) -> str:
+    top_rows = top_by_rating(records, amount)
+    if not top_rows:
+        return "В таблице нет записей для формирования рейтинга."
+
+    lines = ["📊 Топ по оценкам:"]
+    for idx, row in enumerate(top_rows, start=1):
+        lines.append(f"{idx}. {_format_entry(row)}")
+    return "\n".join(lines)
+
+
+def _recent_summary(records: Iterable[Dict[str, str]], days: int = 30) -> str:
+    last_rows = recent_entries(records, days)
+    if not last_rows:
+        return "За последний месяц вы не добавляли новых записей."
+
+    lines = [f"🗓 За последние {days} дней:"]
+    for row in last_rows[:10]:
+        timestamp = (
+            row.get("Добавлено")
+            or row.get("Timestamp")
+            or row.get("Дата")
+            or row.get("Added")
+        )
+        lines.append(f"{timestamp}: {_format_entry(row)}")
+    if len(last_rows) > 10:
+        lines.append(f"… и ещё {len(last_rows) - 10}")
+    return "\n".join(lines)
+
+
+async def _save_movie_entry(update: Update, movie_data: Dict[str, str]) -> bool:
+    try:
+        worksheet = connect_to_sheet()
+        add_movie_row(
+            worksheet,
+            movie_data["film"],
+            movie_data["year"],
+            movie_data["genre"],
+            movie_data["rating"],
+            movie_data.get("comment", ""),
+            normalize_type(movie_data.get("type", "фильм")),
+            normalize_recommendation(
+                movie_data.get("recommendation", "можно посмотреть")
+            ),
+            normalize_owner(movie_data.get("owner")),
+        )
+        return True
+    except Exception:
+        add_offline_entry(movie_data)
+        await update.effective_chat.send_message(
+            "⚠️ Сейчас нет связи с таблицей. Я сохранил запись оффлайн и добавлю её, "
+            "когда бот снова будет онлайн.\n"
+            f"Запись: {movie_data.get('film', '—')} ({movie_data.get('year', '—')})",
+            reply_markup=get_main_menu(),
+        )
+        return False
 
 
 def _type_keyboard() -> InlineKeyboardMarkup:
@@ -206,6 +281,27 @@ def _recommendation_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton("🗑 В топку", callback_data="recommendation:в топку")],
+        ]
+    )
+
+
+def _rating_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("10", callback_data="rating:10"),
+                InlineKeyboardButton("9", callback_data="rating:9"),
+                InlineKeyboardButton("8", callback_data="rating:8"),
+                InlineKeyboardButton("7", callback_data="rating:7"),
+                InlineKeyboardButton("6", callback_data="rating:6"),
+            ],
+            [
+                InlineKeyboardButton("5", callback_data="rating:5"),
+                InlineKeyboardButton("4", callback_data="rating:4"),
+                InlineKeyboardButton("3", callback_data="rating:3"),
+                InlineKeyboardButton("2", callback_data="rating:2"),
+                InlineKeyboardButton("1", callback_data="rating:1"),
+            ],
         ]
     )
 
@@ -253,39 +349,13 @@ async def _handle_find_command(
 async def _handle_top_command(
     update: Update, records: Iterable[Dict[str, str]], amount: int
 ) -> None:
-    top_rows = top_by_rating(records, amount)
-    if not top_rows:
-        await update.message.reply_text("В таблице нет записей для формирования рейтинга.")
-        return
-
-    lines = ["📊 Топ по оценкам:"]
-    for idx, row in enumerate(top_rows, start=1):
-        lines.append(f"{idx}. {_format_entry(row)}")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(_top_summary(records, amount))
 
 
 async def _handle_recent_command(
     update: Update, records: Iterable[Dict[str, str]], days: int = 30
 ) -> None:
-    last_rows = recent_entries(records, days)
-    if not last_rows:
-        await update.message.reply_text(
-            "За последний месяц вы не добавляли новых записей."
-        )
-        return
-
-    lines = ["🗓 За последние 30 дней:"]
-    for row in last_rows[:10]:
-        timestamp = (
-            row.get("Добавлено")
-            or row.get("Timestamp")
-            or row.get("Дата")
-            or row.get("Added")
-        )
-        lines.append(f"{timestamp}: {_format_entry(row)}")
-    if len(last_rows) > 10:
-        lines.append(f"… и ещё {len(last_rows) - 10}")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(_recent_summary(records, days))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -383,7 +453,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             data["genre"] = message_text
             user_session["step"] = "rating"
-            await update.message.reply_text("⭐ Введите оценку от 1 до 10:")
+            await update.message.reply_text(
+                "⭐ Введите оценку от 1 до 10:", reply_markup=_rating_keyboard()
+            )
             return
 
         if step == "rating":
@@ -391,11 +463,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             try:
                 rating_value = float(normalized)
             except ValueError:
-                await update.message.reply_text("Оценка должна быть числом от 1 до 10.")
+                await update.message.reply_text(
+                    "Оценка должна быть числом от 1 до 10.",
+                    reply_markup=_rating_keyboard(),
+                )
                 return
 
             if not 1 <= rating_value <= 10:
-                await update.message.reply_text("Оценка должна быть в пределах от 1 до 10.")
+                await update.message.reply_text(
+                    "Оценка должна быть в пределах от 1 до 10.",
+                    reply_markup=_rating_keyboard(),
+                )
                 return
 
             data["rating"] = f"{rating_value:g}"
@@ -440,31 +518,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     submission = _parse_offline_submission(message_text)
     if submission:
-        worksheet = connect_to_sheet()
-        add_movie_row(
-            worksheet,
-            submission["film"],
-            submission["year"],
-            submission["genre"],
-            submission["rating"],
-            submission["comment"],
-            submission["type"],
-            submission["recommendation"],
-            submission["owner"],
-        )
-        owner_note = (
-            f"\nЧьё: {submission['owner']}" if submission.get("owner") else ""
-        )
-        await update.message.reply_text(
-            f"✅ Добавил фильм: {submission['film']} ({submission['year']}) — {submission['rating']}/10"
-            + owner_note
-        )
+        saved = await _save_movie_entry(update, submission)
+        if saved:
+            owner_note = (
+                f"\nЧьё: {submission['owner']}" if submission.get("owner") else ""
+            )
+            await update.message.reply_text(
+                f"✅ Добавил фильм: {submission['film']} ({submission['year']}) — {submission['rating']}/10"
+                + owner_note
+            )
         return
 
     lowered = message_text.lower()
     if "покажи" in lowered and "месяц" in lowered:
-        worksheet = connect_to_sheet()
-        records = fetch_records(worksheet)
+        records = await _safe_fetch_records(update)
+        if records is None:
+            return
         await _handle_recent_command(update, records)
         return
 
@@ -485,8 +554,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "list_films":
-        worksheet = connect_to_sheet()
-        records = fetch_records(worksheet)
+        records = await _safe_fetch_records(update)
+        if records is None:
+            return
         if not records:
             await query.edit_message_text(
                 "Пока нет записей. Начните с добавления нового фильма!",
@@ -498,6 +568,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         for row in records[-5:]:
             lines.append(_format_entry(row))
         await query.edit_message_text("\n".join(lines), reply_markup=get_main_menu())
+        return
+
+    if data == "recent_entries":
+        records = await _safe_fetch_records(update)
+        if records is None:
+            return
+        await query.edit_message_text(
+            _recent_summary(records), reply_markup=get_main_menu()
+        )
+        return
+
+    if data == "top5":
+        records = await _safe_fetch_records(update)
+        if records is None:
+            return
+        await query.edit_message_text(
+            _top_summary(records, 5), reply_markup=get_main_menu()
+        )
         return
 
     if data == "search_genre":
@@ -571,6 +659,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if data.startswith("rating:"):
+        rating = data.split(":", 1)[1]
+        user_session = context.user_data.get("add_movie")
+        if not user_session:
+            await query.edit_message_text(
+                "Сессия добавления не найдена. Попробуйте снова через /add.",
+                reply_markup=get_main_menu(),
+            )
+            return
+        movie_data = user_session.get("data", {})
+        movie_data["rating"] = rating
+        user_session["step"] = "comment"
+        await query.edit_message_text("Оценка выбрана!")
+        await update.effective_chat.send_message(
+            "📝 Общий комментарий (или нажмите кнопку 'Пропустить'):",
+            reply_markup=_comment_keyboard(),
+        )
+        return
+
     if data.startswith("recommendation:"):
         recommendation = data.split(":", 1)[1]
         user_session = context.user_data.get("add_movie")
@@ -627,8 +734,9 @@ async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    worksheet = connect_to_sheet()
-    records = fetch_records(worksheet)
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
     await _handle_find_command(update, records, genre)
 
 
@@ -650,14 +758,16 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    worksheet = connect_to_sheet()
-    records = fetch_records(worksheet)
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
     await _handle_top_command(update, records, max(amount, 1))
 
 
 async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать записи за последний месяц."""
 
-    worksheet = connect_to_sheet()
-    records = fetch_records(worksheet)
+    records = await _safe_fetch_records(update)
+    if records is None:
+        return
     await _handle_recent_command(update, records)
