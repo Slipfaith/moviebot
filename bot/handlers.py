@@ -294,6 +294,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     error = await _add_entry_to_sheet(entry)
     if error:
         print("GSHEET ERROR:", type(error).__name__, error)
+        if update.effective_chat:
+            entry["chat_id"] = update.effective_chat.id
         add_offline_entry(entry)
         await _send(
             update,
@@ -666,6 +668,8 @@ async def _finish_add_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     error = await _add_entry_to_sheet(entry)
     if error:
         print("GSHEET ERROR:", type(error).__name__, error)
+        if update.effective_chat:
+            entry["chat_id"] = update.effective_chat.id
         add_offline_entry(entry)
         await _send(
             update,

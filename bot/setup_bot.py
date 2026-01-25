@@ -66,11 +66,32 @@ class _PatchedApplication(Application):
     __slots__ = Application.__slots__ + ("_Application__stop_running_marker",)
 
 
+async def _sync_offline_entries(app: Application) -> None:
+    result = flush_offline_entries()
+    if result.error:
+        print("GSHEET ERROR:", type(result.error).__name__, result.error)
+    if result.processed:
+        print(f"⬆️ Синхронизировал {result.processed} оффлайн-записи(ей) в таблицу.")
+        if result.chat_ids:
+            for chat_id in result.chat_ids:
+                try:
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "✅ Оффлайн-записи синхронизированы: "
+                            f"{result.processed} добавлено в таблицу."
+                        ),
+                    )
+                except Exception as exc:
+                    print("TELEGRAM ERROR:", type(exc).__name__, exc)
+
+
 def create_bot():
     builder = ApplicationBuilder()
 
     if "_Application__stop_running_marker" not in Application.__slots__:
         builder.application_class(_PatchedApplication)
+    builder.post_init(_sync_offline_entries)
 
     app = builder.token(TELEGRAM_TOKEN).build()
 
@@ -126,9 +147,5 @@ def create_bot():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-
-    processed = flush_offline_entries()
-    if processed:
-        print(f"⬆️ Синхронизировал {processed} оффлайн-записи(ей) в таблицу.")
 
     return app

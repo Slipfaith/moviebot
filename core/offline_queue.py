@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from core.gsheet import add_movie_row, connect_to_sheet
 from core.normalization import normalize_owner, normalize_recommendation, normalize_type
@@ -21,6 +22,14 @@ _ENTRY_FIELDS: Sequence[str] = (
     "recommendation",
     "owner",
 )
+
+
+@dataclass
+class OfflineSyncResult:
+    processed: int
+    failed: int
+    error: Optional[Exception] = None
+    chat_ids: Set[int] = field(default_factory=set)
 
 
 def _read_queue() -> List[Dict[str, Any]]:
@@ -61,6 +70,13 @@ def add_offline_entry(entry: Dict[str, Any]) -> None:
         "owner": normalize_owner(entry.get("owner", "")),
     }
 
+    chat_id = entry.get("chat_id")
+    if chat_id is not None:
+        try:
+            normalized_entry["chat_id"] = int(chat_id)
+        except (TypeError, ValueError):
+            pass
+
     if "conf" in entry:
         raw_conf = entry.get("conf", [])
         if isinstance(raw_conf, (list, tuple)):
@@ -83,29 +99,60 @@ def add_offline_entry(entry: Dict[str, Any]) -> None:
     _write_queue(entries)
 
 
-def flush_offline_entries() -> int:
-    """Upload queued entries to Google Sheets. Returns number of rows synced."""
+def flush_offline_entries() -> OfflineSyncResult:
+    """Upload queued entries to Google Sheets."""
 
     entries = _read_queue()
     if not entries:
-        return 0
+        return OfflineSyncResult(processed=0, failed=0, chat_ids=set())
 
-    worksheet = connect_to_sheet()
-    for entry in entries:
-        add_movie_row(
-            worksheet,
-            entry.get("film", ""),
-            entry.get("year", ""),
-            entry.get("genre", ""),
-            entry.get("rating", ""),
-            entry.get("comment", ""),
-            normalize_type(entry.get("type")),
-            normalize_recommendation(entry.get("recommendation")),
-            normalize_owner(entry.get("owner")),
+    try:
+        worksheet = connect_to_sheet()
+    except Exception as exc:
+        return OfflineSyncResult(
+            processed=0,
+            failed=len(entries),
+            error=exc,
+            chat_ids=set(),
         )
 
-    _QUEUE_FILE.unlink(missing_ok=True)
-    return len(entries)
+    processed_entries: List[Dict[str, Any]] = []
+    processed_chat_ids: Set[int] = set()
+    error: Optional[Exception] = None
+
+    for entry in entries:
+        try:
+            add_movie_row(
+                worksheet,
+                entry.get("film", ""),
+                entry.get("year", ""),
+                entry.get("genre", ""),
+                entry.get("rating", ""),
+                entry.get("comment", ""),
+                normalize_type(entry.get("type")),
+                normalize_recommendation(entry.get("recommendation")),
+                normalize_owner(entry.get("owner")),
+            )
+            processed_entries.append(entry)
+            chat_id = entry.get("chat_id")
+            if isinstance(chat_id, int):
+                processed_chat_ids.add(chat_id)
+        except Exception as exc:
+            error = exc
+            break
+
+    remaining_entries = entries[len(processed_entries):]
+    if remaining_entries:
+        _write_queue(remaining_entries)
+    else:
+        _QUEUE_FILE.unlink(missing_ok=True)
+
+    return OfflineSyncResult(
+        processed=len(processed_entries),
+        failed=len(entries) - len(processed_entries),
+        error=error,
+        chat_ids=processed_chat_ids,
+    )
 
 
 def has_offline_entries() -> bool:
