@@ -601,6 +601,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=get_main_menu(),
         )
         return
+
+    if data == "help":
+        await query.edit_message_text(HELP_TEXT, reply_markup=get_main_menu())
+        return
+
     if data == "offline_help":
         await query.edit_message_text(OFFLINE_GUIDE_TEXT, reply_markup=get_main_menu())
         return
