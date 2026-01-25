@@ -18,9 +18,13 @@ from bot.handlers import (
     handle_photo,
     handle_message,
     help_command,
+    list_command,
     menu_command,
+    owner_command,
+    random_command,
     recent_command,
     start_command,
+    stats_command,
     top_command,
 )
 
@@ -52,6 +56,10 @@ def create_bot():
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("find", find_command))
+    app.add_handler(CommandHandler("list", list_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("random", random_command))
+    app.add_handler(CommandHandler("owner", owner_command))
     app.add_handler(CommandHandler("top", top_command))
     app.add_handler(CommandHandler("recent", recent_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
