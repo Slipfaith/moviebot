@@ -1,9 +1,4 @@
 python-telegram-bot
 gspread
 python-dotenv
-numpy
-Pillow
 requests
-torch
-torchvision
-easyocr

@@ -52,6 +52,7 @@ secrets.txt
 config_local.py
 config_private.py
 credentials.json
+google_credentials.json
 google_service.json
 service_account.json
 *.token
