@@ -7,9 +7,11 @@ from core.config import (
     GEMINI_FALLBACK_MODELS,
     GEMINI_MAX_RETRIES,
     GEMINI_MODEL,
+    MISTRAL_API_KEY,
+    MISTRAL_AUDIO_MODEL,
+    MISTRAL_MODEL,
     GOOGLE_CREDENTIALS,
     GOOGLE_SHEET_NAME,
-    KINOPOISK_TOKEN,
     OMDB_API_KEY,
     TELEGRAM_TOKEN,
     TMDB_API_KEY,
@@ -60,16 +62,19 @@ def print_startup_diagnostics(check_sheet: bool = True) -> None:
             print(f"✅ GEMINI_FALLBACK_MODELS: {', '.join(GEMINI_FALLBACK_MODELS)}")
         print(f"✅ GEMINI_MAX_RETRIES: {GEMINI_MAX_RETRIES}")
     print(
+        f"{_format(bool(MISTRAL_API_KEY))} MISTRAL_API_KEY: "
+        f"{'задан' if MISTRAL_API_KEY else 'не найден'}"
+    )
+    if MISTRAL_API_KEY:
+        print(f"✅ MISTRAL_MODEL: {MISTRAL_MODEL}")
+        print(f"✅ MISTRAL_AUDIO_MODEL: {MISTRAL_AUDIO_MODEL}")
+    print(
         f"{_format(bool(TMDB_API_KEY))} TMDB_API_KEY: "
         f"{'задан' if TMDB_API_KEY else 'не найден'}"
     )
     print(
         f"{_format(bool(OMDB_API_KEY))} OMDB_API_KEY: "
         f"{'задан' if OMDB_API_KEY else 'не найден'}"
-    )
-    print(
-        f"{_format(bool(KINOPOISK_TOKEN))} KINOPOISK_TOKEN: "
-        f"{'задан' if KINOPOISK_TOKEN else 'не найден'}"
     )
 
     if not check_sheet:

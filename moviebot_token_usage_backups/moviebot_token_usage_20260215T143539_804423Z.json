@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-02-15T14:35:38.168595+00:00",
+  "providers": {
+    "gemini": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "requests": 0
+    },
+    "mistral": {
+      "input_tokens": 5,
+      "output_tokens": 54,
+      "requests": 1
+    }
+  },
+  "totals": {
+    "input_tokens": 5,
+    "output_tokens": 54,
+    "requests": 1
+  }
+}

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import socket
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,12 +29,18 @@ _TMDB_BASE_URLS = (
     "https://api.themoviedb.org/3",
     "https://api.tmdb.org/3",
 )
+_TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 _TMDB_GENRE_CACHE_TTL_SECONDS = 30 * 60
 _TMDB_GENRE_CACHE: Optional[Tuple[float, Dict[int, str]]] = None
 _TMDB_UNAVAILABLE_COOLDOWN_SECONDS = 10 * 60
 _TMDB_UNAVAILABLE_UNTIL_MONO = 0.0
+_TMDB_CANDIDATES_CACHE_TTL_SECONDS = 20 * 60
+_TMDB_CANDIDATES_CACHE_MAX_ITEMS = 128
+_TMDB_CANDIDATES_CACHE: Dict[Tuple[object, ...], Tuple[float, List["CandidateMovie"]]] = {}
+_TMDB_CANDIDATES_CACHE_LOCK = threading.RLock()
 _OMDB_CACHE_TTL_SECONDS = 24 * 60 * 60
 _OMDB_CACHE: Dict[str, Tuple[float, Optional[Dict[str, str]]]] = {}
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,6 +74,7 @@ class CandidateMovie:
     reason: str
     imdb_rating: Optional[float] = None
     omdb_plot: str = ""
+    poster_url: str = ""
 
 
 def tmdb_enabled() -> bool:
@@ -251,6 +260,132 @@ def _match_genre_ids(
     return matched
 
 
+def _preferred_genre_weights(profile: TasteProfile) -> Dict[str, float]:
+    if not profile.top_genres:
+        return {}
+    max_score = max((score for _, score in profile.top_genres if score > 0), default=1.0)
+    if max_score <= 0:
+        max_score = 1.0
+    weights: Dict[str, float] = {}
+    for genre, score in profile.top_genres[:8]:
+        normalized = _normalize_title(genre)
+        if not normalized:
+            continue
+        weights[normalized] = max(float(score), 0.1) / max_score
+    return weights
+
+
+def _shared_preferred_genres(
+    item_genre_ids: Sequence[int],
+    genre_map: Dict[int, str],
+    preferred_genre_set: Set[str],
+) -> List[str]:
+    if not item_genre_ids or not preferred_genre_set:
+        return []
+    shared: List[str] = []
+    seen: Set[str] = set()
+    for genre_id in item_genre_ids:
+        name = genre_map.get(genre_id)
+        if not name:
+            continue
+        normalized = _normalize_title(name)
+        if normalized in preferred_genre_set and normalized not in seen:
+            seen.add(normalized)
+            shared.append(name)
+    return shared
+
+
+def _genre_affinity_score(shared_genres: Sequence[str], genre_weights: Dict[str, float]) -> float:
+    if not shared_genres or not genre_weights:
+        return 0.0
+    values = [
+        genre_weights.get(_normalize_title(name), 0.0)
+        for name in shared_genres
+    ]
+    values = [value for value in values if value > 0]
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _reason_from_shared_genres(shared_genres: Sequence[str]) -> str:
+    if shared_genres:
+        return "совпадают жанры: " + ", ".join(shared_genres[:3])
+    return "близко к вашим любимым жанрам и оценкам"
+
+
+def _seed_search_match_score(
+    item: Dict[str, object],
+    *,
+    seed_title_norm: str,
+    seed_year: Optional[int],
+) -> float:
+    title = str(item.get("title") or item.get("name") or "").strip()
+    title_norm = _normalize_title(title)
+    if not title_norm:
+        return -1.0
+
+    score = 0.0
+    if title_norm == seed_title_norm:
+        score += 6.0
+    elif seed_title_norm in title_norm or title_norm in seed_title_norm:
+        score += 3.0
+    else:
+        seed_tokens = set(seed_title_norm.split())
+        item_tokens = set(title_norm.split())
+        if seed_tokens and item_tokens:
+            overlap_ratio = len(seed_tokens & item_tokens) / max(len(seed_tokens), 1)
+            score += overlap_ratio * 2.0
+
+    if seed_year:
+        item_year = _parse_year(str(item.get("release_date") or ""))
+        if item_year:
+            year_diff = abs(item_year - seed_year)
+            if year_diff == 0:
+                score += 2.0
+            elif year_diff <= 1:
+                score += 1.4
+            elif year_diff <= 3:
+                score += 0.6
+            else:
+                score -= 0.8
+
+    score += min(_parse_rating(item.get("vote_average")), 10.0) / 20.0
+    try:
+        vote_count = int(item.get("vote_count", 0))
+    except (TypeError, ValueError):
+        vote_count = 0
+    score += min(vote_count / 20000.0, 0.5)
+    return score
+
+
+def _pick_best_seed_item(
+    search_results: Sequence[object],
+    *,
+    seed_title: str,
+    seed_year: Optional[int],
+) -> Optional[Dict[str, object]]:
+    seed_title_norm = _normalize_title(seed_title)
+    if not seed_title_norm:
+        return None
+    best_item: Optional[Dict[str, object]] = None
+    best_score = -1.0
+    for raw in list(search_results)[:8]:
+        if not isinstance(raw, dict):
+            continue
+        score = _seed_search_match_score(
+            raw,
+            seed_title_norm=seed_title_norm,
+            seed_year=seed_year,
+        )
+        if score > best_score:
+            best_score = score
+            best_item = raw
+    if best_score < 1.5:
+        return None
+    return best_item
+
+
 def _movie_from_tmdb_item(
     item: Dict,
     genre_map: Dict[int, str],
@@ -284,6 +419,14 @@ def _movie_from_tmdb_item(
     if not genres:
         genres = ["—"]
 
+    poster_url = ""
+    poster_path = item.get("poster_path")
+    if isinstance(poster_path, str) and poster_path.strip():
+        normalized_path = poster_path.strip()
+        if not normalized_path.startswith("/"):
+            normalized_path = f"/{normalized_path}"
+        poster_url = f"{_TMDB_POSTER_BASE_URL}{normalized_path}"
+
     return CandidateMovie(
         tmdb_id=movie_id,
         title=title.strip(),
@@ -293,6 +436,7 @@ def _movie_from_tmdb_item(
         genres=genres,
         score=score,
         reason=reason,
+        poster_url=poster_url,
     )
 
 
@@ -331,7 +475,7 @@ def _omdb_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        print("OMDB ERROR:", type(exc).__name__, exc)
+        logger.error("OMDB ERROR: %s %s", type(exc).__name__, exc)
         _OMDB_CACHE[cache_key] = (now + 60, None)
         return None
 
@@ -348,7 +492,7 @@ def _omdb_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
                 retry_response.raise_for_status()
                 payload = retry_response.json()
             except Exception as exc:
-                print("OMDB ERROR:", type(exc).__name__, exc)
+                logger.error("OMDB ERROR: %s %s", type(exc).__name__, exc)
                 payload = {"Response": "False"}
 
     if str(payload.get("Response", "")).lower() != "true":
@@ -362,6 +506,7 @@ def _omdb_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
         "Type": str(payload.get("Type", "")),
         "imdbRating": str(payload.get("imdbRating", "")),
         "Plot": str(payload.get("Plot", "")),
+        "Poster": str(payload.get("Poster", "")),
     }
     _OMDB_CACHE[cache_key] = (now + _OMDB_CACHE_TTL_SECONDS, result)
     return result
@@ -390,6 +535,9 @@ def _enrich_candidates_with_omdb(
         plot = (payload.get("Plot") or "").strip()
         if plot and plot.lower() != "n/a":
             item.omdb_plot = plot
+        poster = (payload.get("Poster") or "").strip()
+        if not item.poster_url and poster and poster.lower() != "n/a":
+            item.poster_url = poster
 
     with ThreadPoolExecutor(max_workers=min(6, len(top_slice))) as executor:
         futures = [executor.submit(_enrich_one, item) for item in top_slice]
@@ -397,7 +545,7 @@ def _enrich_candidates_with_omdb(
             try:
                 future.result()
             except Exception as exc:
-                print("OMDB ENRICH ERROR:", type(exc).__name__, exc)
+                logger.error("OMDB ENRICH ERROR: %s %s", type(exc).__name__, exc)
 
 
 def lookup_omdb_details(title: str, year: Optional[int] = None) -> Optional[Dict[str, str]]:
@@ -407,6 +555,82 @@ def lookup_omdb_details(title: str, year: Optional[int] = None) -> Optional[Dict
     return _omdb_lookup(normalized, year)
 
 
+def _tmdb_candidates_cache_key(
+    profile: TasteProfile,
+    limit: int,
+) -> Tuple[object, ...]:
+    top_genres = tuple(
+        (_normalize_title(genre), round(score, 2))
+        for genre, score in profile.top_genres[:6]
+    )
+    top_favorites = tuple(
+        (_normalize_title(item.title), item.year or 0, round(item.rating, 1))
+        for item in profile.favorites[:10]
+    )
+    watched_digest = hash(frozenset(profile.watched_lookup))
+    return (
+        limit,
+        profile.total_entries,
+        profile.rated_entries,
+        round(profile.average_rating, 2),
+        top_genres,
+        top_favorites,
+        watched_digest,
+    )
+
+
+def _prune_tmdb_candidates_cache_unlocked(now: float) -> None:
+    expired_keys = [
+        key
+        for key, (expires_at, _) in _TMDB_CANDIDATES_CACHE.items()
+        if expires_at <= now
+    ]
+    for key in expired_keys:
+        _TMDB_CANDIDATES_CACHE.pop(key, None)
+
+    overflow = len(_TMDB_CANDIDATES_CACHE) - _TMDB_CANDIDATES_CACHE_MAX_ITEMS
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(
+        _TMDB_CANDIDATES_CACHE.items(),
+        key=lambda item: item[1][0],
+    )[:overflow]
+    for key, _ in oldest_keys:
+        _TMDB_CANDIDATES_CACHE.pop(key, None)
+
+
+def _get_cached_tmdb_candidates(
+    profile: TasteProfile,
+    limit: int,
+) -> Optional[List[CandidateMovie]]:
+    now = time.monotonic()
+    cache_key = _tmdb_candidates_cache_key(profile, limit)
+    with _TMDB_CANDIDATES_CACHE_LOCK:
+        cached = _TMDB_CANDIDATES_CACHE.get(cache_key)
+        if not cached:
+            return None
+        expires_at, items = cached
+        if now > expires_at:
+            _TMDB_CANDIDATES_CACHE.pop(cache_key, None)
+            return None
+        return list(items)
+
+
+def _store_cached_tmdb_candidates(
+    profile: TasteProfile,
+    limit: int,
+    items: List[CandidateMovie],
+) -> None:
+    now = time.monotonic()
+    cache_key = _tmdb_candidates_cache_key(profile, limit)
+    with _TMDB_CANDIDATES_CACHE_LOCK:
+        _prune_tmdb_candidates_cache_unlocked(now)
+        _TMDB_CANDIDATES_CACHE[cache_key] = (
+            now + _TMDB_CANDIDATES_CACHE_TTL_SECONDS,
+            list(items),
+        )
+
+
 def collect_tmdb_candidates(
     profile: TasteProfile,
     *,
@@ -414,6 +638,9 @@ def collect_tmdb_candidates(
 ) -> List[CandidateMovie]:
     if not TMDB_API_KEY:
         return []
+    cached = _get_cached_tmdb_candidates(profile, limit)
+    if cached is not None:
+        return cached
 
     try:
         genre_map = _tmdb_genre_map()
@@ -422,7 +649,12 @@ def collect_tmdb_candidates(
 
     preferred_genres = [genre for genre, _ in profile.top_genres[:5]]
     preferred_genre_ids = _match_genre_ids(preferred_genres, genre_map)
-    preferred_genre_set = {genre.lower() for genre in preferred_genres}
+    preferred_weights = _preferred_genre_weights(profile)
+    preferred_genre_set = set(preferred_weights.keys()) or {
+        _normalize_title(genre)
+        for genre in preferred_genres
+        if _normalize_title(genre)
+    }
     candidates: Dict[int, CandidateMovie] = {}
 
     seed_movies = [item for item in profile.favorites if item.rating >= 8.0][:4]
@@ -441,7 +673,13 @@ def collect_tmdb_candidates(
             search_results = search_payload.get("results", [])
             if not isinstance(search_results, list) or not search_results:
                 continue
-            seed_item = search_results[0]
+            seed_item = _pick_best_seed_item(
+                search_results,
+                seed_title=seed.title,
+                seed_year=seed.year,
+            )
+            if not seed_item:
+                continue
             seed_id = seed_item.get("id")
             if not isinstance(seed_id, int):
                 continue
@@ -464,22 +702,26 @@ def collect_tmdb_candidates(
                 continue
 
             item_genres = item.get("genre_ids") if isinstance(item.get("genre_ids"), list) else []
-            overlap = 0
-            for genre_id in item_genres:
-                genre_name = genre_map.get(genre_id, "").lower()
-                if genre_name and genre_name in preferred_genre_set:
-                    overlap += 1
+            shared_genres = _shared_preferred_genres(
+                item_genres,
+                genre_map,
+                preferred_genre_set,
+            )
+            if preferred_genre_set and not shared_genres:
+                continue
+            affinity = _genre_affinity_score(shared_genres, preferred_weights)
 
             score = (
-                seed.rating * 0.9
-                + _parse_rating(item.get("vote_average")) * 0.8
+                seed.rating * 0.7
+                + _parse_rating(item.get("vote_average")) * 0.9
                 + min(int(item.get("vote_count", 0)) / 4000.0, 2.5)
-                + overlap * 1.2
+                + len(shared_genres) * 1.8
+                + affinity * 2.2
             )
             candidate = _movie_from_tmdb_item(
                 item,
                 genre_map,
-                reason=f"похоже на: {seed.title}",
+                reason=_reason_from_shared_genres(shared_genres),
                 score=score,
             )
             if candidate:
@@ -508,14 +750,26 @@ def collect_tmdb_candidates(
                 if _normalize_title(item_title) in profile.watched_lookup:
                     continue
 
+                item_genres = item.get("genre_ids") if isinstance(item.get("genre_ids"), list) else []
+                shared_genres = _shared_preferred_genres(
+                    item_genres,
+                    genre_map,
+                    preferred_genre_set,
+                )
+                if preferred_genre_set and not shared_genres:
+                    continue
+                affinity = _genre_affinity_score(shared_genres, preferred_weights)
+
                 score = (
                     _parse_rating(item.get("vote_average")) * 0.9
                     + min(int(item.get("vote_count", 0)) / 5000.0, 2.0)
+                    + len(shared_genres) * 2.0
+                    + affinity * 2.4
                 )
                 candidate = _movie_from_tmdb_item(
                     item,
                     genre_map,
-                    reason="популярное в ваших жанрах",
+                    reason=_reason_from_shared_genres(shared_genres),
                     score=score,
                 )
                 if candidate:
@@ -524,7 +778,9 @@ def collect_tmdb_candidates(
     ranked = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
     _enrich_candidates_with_omdb(ranked, limit=min(12, len(ranked)))
     ranked.sort(key=lambda item: item.score, reverse=True)
-    return ranked[:limit]
+    result = ranked[:limit]
+    _store_cached_tmdb_candidates(profile, limit, result)
+    return list(result)
 
 
 def _join_limited(items: Sequence[str], *, max_chars: int) -> str:

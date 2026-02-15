@@ -35,6 +35,29 @@ try:
     GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "20"))
 except ValueError:
     GEMINI_TIMEOUT_SECONDS = 20.0
+try:
+    GEMINI_TOTAL_TIMEOUT_SECONDS = float(
+        os.getenv("GEMINI_TOTAL_TIMEOUT_SECONDS", "60")
+    )
+except ValueError:
+    GEMINI_TOTAL_TIMEOUT_SECONDS = 60.0
+MISTRAL_API_KEY = os.getenv("MISTRALAPI") or os.getenv("MISTRAL_API_KEY")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+MISTRAL_AUDIO_MODEL = os.getenv("MISTRAL_AUDIO_MODEL", "voxtral-mini-latest")
+try:
+    MISTRAL_TIMEOUT_SECONDS = float(os.getenv("MISTRAL_TIMEOUT_SECONDS", "30"))
+except ValueError:
+    MISTRAL_TIMEOUT_SECONDS = 30.0
+try:
+    MISTRAL_MAX_RETRIES = int(os.getenv("MISTRAL_MAX_RETRIES", "2"))
+except ValueError:
+    MISTRAL_MAX_RETRIES = 2
+try:
+    MISTRAL_RETRY_BASE_DELAY_SECONDS = float(
+        os.getenv("MISTRAL_RETRY_BASE_DELAY_SECONDS", "1.2")
+    )
+except ValueError:
+    MISTRAL_RETRY_BASE_DELAY_SECONDS = 1.2
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TMDB_LANGUAGE = os.getenv("TMDB_LANGUAGE", "ru-RU")
 TMDB_REGION = os.getenv("TMDB_REGION", "RU")
@@ -48,7 +71,10 @@ try:
     OMDB_TIMEOUT_SECONDS = float(os.getenv("OMDB_TIMEOUT_SECONDS", "8"))
 except ValueError:
     OMDB_TIMEOUT_SECONDS = 8.0
-KINOPOISK_TOKEN = os.getenv("KINOPOISK_TOKEN")
+try:
+    SHEETS_THREAD_TIMEOUT_SECONDS = float(os.getenv("SHEETS_THREAD_TIMEOUT_SECONDS", "15"))
+except ValueError:
+    SHEETS_THREAD_TIMEOUT_SECONDS = 15.0
 
 if GOOGLE_CREDENTIALS:
     credentials_path = Path(GOOGLE_CREDENTIALS)

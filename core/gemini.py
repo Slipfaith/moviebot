@@ -15,7 +15,9 @@ from core.config import (
     GEMINI_MODEL,
     GEMINI_RETRY_BASE_DELAY_SECONDS,
     GEMINI_TIMEOUT_SECONDS,
+    GEMINI_TOTAL_TIMEOUT_SECONDS,
 )
+from core.token_usage import record_token_usage
 
 _API_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -60,6 +62,36 @@ def _extract_text(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def _as_non_negative_int(value: Any) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return result if result >= 0 else 0
+
+
+def _extract_usage_tokens(payload: Dict[str, Any]) -> tuple[int, int]:
+    usage = payload.get("usageMetadata")
+    if not isinstance(usage, dict):
+        return 0, 0
+
+    prompt_tokens = _as_non_negative_int(usage.get("promptTokenCount"))
+    cached_tokens = _as_non_negative_int(usage.get("cachedContentTokenCount"))
+    input_tokens = prompt_tokens + cached_tokens
+
+    output_tokens = _as_non_negative_int(usage.get("candidatesTokenCount"))
+    if output_tokens <= 0:
+        output_tokens = _as_non_negative_int(usage.get("outputTokenCount"))
+
+    total_tokens = _as_non_negative_int(usage.get("totalTokenCount"))
+    if total_tokens > 0 and input_tokens <= 0 and output_tokens > 0 and total_tokens >= output_tokens:
+        input_tokens = total_tokens - output_tokens
+    if total_tokens > 0 and output_tokens <= 0 and input_tokens > 0 and total_tokens >= input_tokens:
+        output_tokens = total_tokens - input_tokens
+
+    return input_tokens, output_tokens
+
+
 def _extract_block_reason(payload: Dict[str, Any]) -> Optional[str]:
     prompt_feedback = payload.get("promptFeedback")
     if isinstance(prompt_feedback, dict):
@@ -87,34 +119,59 @@ def _retry_delay_seconds(attempt: int) -> float:
     return base * (2 ** max(attempt - 1, 0))
 
 
-def _request_gemini(model: str, payload: Dict[str, Any]) -> requests.Response:
+def _request_gemini(
+    model: str,
+    payload: Dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> requests.Response:
     return requests.post(
         _API_URL_TEMPLATE.format(model=model),
         headers={"x-goog-api-key": GEMINI_API_KEY},
         json=payload,
-        timeout=GEMINI_TIMEOUT_SECONDS,
+        timeout=timeout_seconds,
     )
 
 
 def _run_gemini_payload(payload: Dict[str, Any]) -> str:
     last_error: Optional[str] = None
     max_retries = max(GEMINI_MAX_RETRIES, 1)
+    total_timeout = max(GEMINI_TOTAL_TIMEOUT_SECONDS, GEMINI_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + total_timeout
 
     for model in _iter_models():
         for attempt in range(1, max_retries + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GeminiError(
+                    "Gemini is temporarily unavailable. "
+                    f"Total timeout exceeded ({total_timeout:.0f}s). "
+                    f"Last error: {last_error or 'unknown'}"
+                )
+            request_timeout = max(0.1, min(GEMINI_TIMEOUT_SECONDS, remaining))
             try:
-                response = _request_gemini(model, payload)
+                response = _request_gemini(
+                    model,
+                    payload,
+                    timeout_seconds=request_timeout,
+                )
             except requests.RequestException as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt < max_retries:
-                    time.sleep(_retry_delay_seconds(attempt))
+                    delay = min(_retry_delay_seconds(attempt), max(deadline - time.monotonic(), 0.0))
+                    if delay <= 0:
+                        continue
+                    time.sleep(delay)
                     continue
                 break
 
             if response.status_code in _RETRYABLE_STATUS_CODES:
                 last_error = f"HTTP {response.status_code}"
                 if attempt < max_retries:
-                    time.sleep(_retry_delay_seconds(attempt))
+                    delay = min(_retry_delay_seconds(attempt), max(deadline - time.monotonic(), 0.0))
+                    if delay <= 0:
+                        continue
+                    time.sleep(delay)
                     continue
                 break
 
@@ -138,6 +195,9 @@ def _run_gemini_payload(payload: Dict[str, Any]) -> str:
                 data: Dict[str, Any] = response.json()
             except ValueError as exc:
                 raise GeminiError("Gemini returned invalid JSON.") from exc
+
+            in_tokens, out_tokens = _extract_usage_tokens(data)
+            record_token_usage("gemini", in_tokens, out_tokens)
 
             block_reason = _extract_block_reason(data)
             if block_reason:

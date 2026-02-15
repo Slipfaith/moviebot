@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set
@@ -11,6 +14,7 @@ from core.gsheet import add_movie_row, connect_to_sheet
 from core.normalization import normalize_owner, normalize_recommendation, normalize_type
 
 _QUEUE_FILE = Path(__file__).resolve().parent.parent / "data" / "offline_entries.json"
+_QUEUE_LOCK = threading.RLock()
 
 _ENTRY_FIELDS: Sequence[str] = (
     "film",
@@ -32,7 +36,7 @@ class OfflineSyncResult:
     chat_ids: Set[int] = field(default_factory=set)
 
 
-def _read_queue() -> List[Dict[str, Any]]:
+def _read_queue_unlocked() -> List[Dict[str, Any]]:
     if not _QUEUE_FILE.exists():
         return []
     try:
@@ -42,21 +46,57 @@ def _read_queue() -> List[Dict[str, Any]]:
                 return [
                     entry for entry in data if isinstance(entry, dict)
                 ]
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return []
     return []
 
 
-def _write_queue(entries: List[Dict[str, Any]]) -> None:
+def _write_queue_unlocked(entries: List[Dict[str, Any]]) -> None:
     _QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with _QUEUE_FILE.open("w", encoding="utf-8") as handle:
-        json.dump(entries, handle, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f"{_QUEUE_FILE.stem}.",
+        suffix=".tmp",
+        dir=str(_QUEUE_FILE.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(entries, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, _QUEUE_FILE)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _persist_queue_unlocked(entries: List[Dict[str, Any]]) -> None:
+    if entries:
+        _write_queue_unlocked(entries)
+        return
+    _QUEUE_FILE.unlink(missing_ok=True)
+
+
+def _read_queue() -> List[Dict[str, Any]]:
+    with _QUEUE_LOCK:
+        return _read_queue_unlocked()
+
+
+def _remove_processed_entries(
+    current_entries: List[Dict[str, Any]],
+    processed_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    remaining = list(current_entries)
+    for processed in processed_entries:
+        for index, entry in enumerate(remaining):
+            if entry == processed:
+                remaining.pop(index)
+                break
+    return remaining
 
 
 def add_offline_entry(entry: Dict[str, Any]) -> None:
     """Append an entry to the offline queue."""
 
-    entries = _read_queue()
     normalized_entry: Dict[str, Any] = {
         "film": entry.get("film", ""),
         "year": entry.get("year", ""),
@@ -95,14 +135,17 @@ def add_offline_entry(entry: Dict[str, Any]) -> None:
 
         normalized_entry["conf"] = normalized_conf
 
-    entries.append(normalized_entry)
-    _write_queue(entries)
+    with _QUEUE_LOCK:
+        latest_entries = _read_queue_unlocked()
+        latest_entries.append(normalized_entry)
+        _persist_queue_unlocked(latest_entries)
 
 
 def flush_offline_entries() -> OfflineSyncResult:
     """Upload queued entries to Google Sheets."""
 
-    entries = _read_queue()
+    with _QUEUE_LOCK:
+        entries = _read_queue_unlocked()
     if not entries:
         return OfflineSyncResult(processed=0, failed=0, chat_ids=set())
 
@@ -141,11 +184,10 @@ def flush_offline_entries() -> OfflineSyncResult:
             error = exc
             break
 
-    remaining_entries = entries[len(processed_entries):]
-    if remaining_entries:
-        _write_queue(remaining_entries)
-    else:
-        _QUEUE_FILE.unlink(missing_ok=True)
+    with _QUEUE_LOCK:
+        latest_entries = _read_queue_unlocked()
+        remaining_entries = _remove_processed_entries(latest_entries, processed_entries)
+        _persist_queue_unlocked(remaining_entries)
 
     return OfflineSyncResult(
         processed=len(processed_entries),
