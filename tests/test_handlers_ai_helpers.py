@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from bot.handlers_ai_helpers import (
     _build_quick_add_keyboard_from_formatted,
+    _enrich_formatted_recommendations_with_ratings,
     _format_ai_answer_for_telegram,
 )
 
@@ -59,6 +61,26 @@ class HandlersAIHelpersTests(unittest.TestCase):
         self.assertIn("2000+", formatted)
         self.assertNotIn("Матрица (1999)", formatted)
         self.assertNotIn("Семь (1995)", formatted)
+
+    def test_enrich_formatted_recommendations_with_ratings_adds_imdb(self) -> None:
+        formatted = (
+            "<b>New Recommendations</b>\n"
+            "1. <b>Начало (2010)</b> - отличный фантастический триллер\n"
+            "2. <b>Паразиты (2019)</b> - напряженная социальная драма\n"
+        )
+
+        def _fake_lookup(title: str, year: int | None) -> dict | None:
+            if title == "Начало" and year == 2010:
+                return {"imdbRating": "8.8"}
+            if title == "Паразиты" and year == 2019:
+                return {"imdbRating": "8.5"}
+            return None
+
+        with patch("bot.handlers_ai_helpers.lookup_omdb_details", side_effect=_fake_lookup):
+            enriched = _enrich_formatted_recommendations_with_ratings(formatted)
+
+        self.assertIn("IMDb 8.8/10", enriched)
+        self.assertIn("IMDb 8.5/10", enriched)
 
 
 if __name__ == "__main__":

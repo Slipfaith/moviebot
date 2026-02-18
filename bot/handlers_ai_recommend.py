@@ -14,10 +14,14 @@ from bot.commands import COMMAND_AI, slash
 from bot.handlers_ai_helpers import (
     _build_ai_cache_key,
     _build_quick_add_keyboard_from_formatted,
+    _enrich_formatted_recommendations_with_ratings,
     _filter_candidates_by_min_year,
     _filter_recent_candidates,
     _format_ai_answer_for_telegram,
     _get_ai_cached_response,
+    _hard_filter_tmdb_candidates,
+    _render_candidates_as_formatted,
+    _restrict_formatted_to_candidate_pool,
     _store_ai_cached_response,
 )
 from bot.handlers_cache import (
@@ -40,8 +44,8 @@ from core.recommendations import (
     build_candidates_summary,
     build_profile_summary,
     build_taste_profile,
+    collect_query_candidates,
     collect_tmdb_candidates,
-    tmdb_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,11 +91,36 @@ async def _run_ai_recommendation(
                 return
 
         candidates_summary = "TMDB candidates were not used."
-        if include_tmdb_candidates and tmdb_enabled():
-            tmdb_candidates = await asyncio.to_thread(collect_tmdb_candidates, profile)
-            tmdb_candidates = _filter_candidates_by_min_year(tmdb_candidates)
-            tmdb_candidates = _filter_recent_candidates(tmdb_candidates, recent_titles)
-            candidates_summary = build_candidates_summary(tmdb_candidates)
+        candidates_for_ranking = []
+        query_candidates = []
+        if include_tmdb_candidates:
+            profile_candidates = []
+            if strict_query:
+                query_candidates = await asyncio.to_thread(
+                    collect_query_candidates,
+                    profile,
+                    prompt,
+                )
+                # Query-targeted pool is primary; pull profile pool only when very sparse.
+                if len(query_candidates) < 8:
+                    profile_candidates = await asyncio.to_thread(collect_tmdb_candidates, profile)
+            else:
+                profile_candidates = await asyncio.to_thread(collect_tmdb_candidates, profile)
+            pooled_candidates = query_candidates + profile_candidates
+            pooled_candidates = _filter_candidates_by_min_year(pooled_candidates)
+            pooled_candidates = _filter_recent_candidates(pooled_candidates, recent_titles)
+            candidates_for_ranking = _hard_filter_tmdb_candidates(
+                pooled_candidates,
+                prompt=prompt,
+                strict_query=strict_query,
+            )
+            if candidates_for_ranking:
+                candidates_summary = build_candidates_summary(candidates_for_ranking)
+            elif strict_query and (query_candidates or pooled_candidates):
+                # If strict filtering is too narrow, fallback to query-oriented pool first.
+                fallback_pool = query_candidates if query_candidates else pooled_candidates
+                candidates_for_ranking = fallback_pool[:12]
+                candidates_summary = build_candidates_summary(candidates_for_ranking)
 
         prompt_with_context = build_ai_recommendation_prompt(
             prompt=prompt,
@@ -99,6 +128,7 @@ async def _run_ai_recommendation(
             candidates_summary=candidates_summary,
             recent_titles=recent_titles,
             strict_query=strict_query,
+            restrict_to_candidates=bool(candidates_for_ranking),
         )
 
         try:
@@ -122,6 +152,14 @@ async def _run_ai_recommendation(
             return
 
         formatted = _format_ai_answer_for_telegram(answer)
+        formatted = await asyncio.to_thread(_enrich_formatted_recommendations_with_ratings, formatted)
+        if candidates_for_ranking:
+            formatted = _restrict_formatted_to_candidate_pool(
+                formatted,
+                candidates_for_ranking,
+            )
+        elif strict_query and include_tmdb_candidates:
+            formatted = _render_candidates_as_formatted([], max_items=8)
         if len(formatted) > 3900:
             formatted = formatted[:3900].rstrip() + "..."
         quick_add_keyboard, formatted_titles = _build_quick_add_keyboard_from_formatted(formatted)
@@ -150,7 +188,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         context,
         prompt,
         use_response_cache=False,
-        include_tmdb_candidates=False,
+        include_tmdb_candidates=True,
         strict_query=True,
         temperature=0.25,
         max_output_tokens=900,

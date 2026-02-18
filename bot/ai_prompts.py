@@ -16,6 +16,10 @@ AI_REC_TASK_PREFIX_QUERY = (
 AI_REC_RECENT_TITLES_PREFIX = "Do NOT suggest these titles (already recently recommended):\n"
 AI_REC_PROFILE_PREFIX = "Taste profile from Google Sheets:\n"
 AI_REC_CANDIDATES_PREFIX = "TMDB candidate pool:\n"
+AI_REC_CANDIDATE_LOCK_RULE = (
+    "If candidate pool is provided and non-empty, select recommendations only from that pool.\n"
+    "Do not invent or substitute titles outside the pool.\n"
+)
 AI_REC_OUTPUT_RULES = (
     "Output format requirements:\n"
     "1) Russian language only.\n"
@@ -44,6 +48,7 @@ def build_ai_recommendation_prompt(
     recent_titles: list[str],
     *,
     strict_query: bool = False,
+    restrict_to_candidates: bool = False,
 ) -> str:
     """Build a full Gemini prompt for recommendation generation."""
 
@@ -57,6 +62,7 @@ def build_ai_recommendation_prompt(
 
     task_prefix = AI_REC_TASK_PREFIX_QUERY if strict_query else AI_REC_TASK_PREFIX_PROFILE
     output_rules = AI_REC_OUTPUT_RULES_QUERY if strict_query else AI_REC_OUTPUT_RULES
+    candidate_lock_rule = AI_REC_CANDIDATE_LOCK_RULE if restrict_to_candidates else ""
 
     return (
         task_prefix
@@ -66,6 +72,7 @@ def build_ai_recommendation_prompt(
         + f"{profile_summary}\n\n"
         + AI_REC_CANDIDATES_PREFIX
         + f"{candidates_summary}\n\n"
+        + candidate_lock_rule
         + output_rules
     )
 
@@ -76,6 +83,7 @@ __all__ = [
     "AI_REC_RECENT_TITLES_PREFIX",
     "AI_REC_PROFILE_PREFIX",
     "AI_REC_CANDIDATES_PREFIX",
+    "AI_REC_CANDIDATE_LOCK_RULE",
     "AI_REC_OUTPUT_RULES",
     "AI_REC_OUTPUT_RULES_QUERY",
     "build_ai_recommendation_prompt",

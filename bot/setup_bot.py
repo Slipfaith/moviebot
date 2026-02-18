@@ -7,6 +7,7 @@ import warnings
 from telegram.ext import Application, ApplicationBuilder
 
 from bot.handlers_registry import register_handlers
+from bot.handlers_sheet_io import ensure_sheet_index_job
 from bot.setup_runtime import PatchedApplication, on_error, sync_offline_entries
 from core.config import TELEGRAM_TOKEN
 
@@ -32,6 +33,7 @@ def create_bot():
     app = builder.token(TELEGRAM_TOKEN).build()
 
     register_handlers(app)
+    ensure_sheet_index_job(app)
     app.add_error_handler(on_error)
 
     return app

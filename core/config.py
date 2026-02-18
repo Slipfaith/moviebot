@@ -65,12 +65,28 @@ try:
     TMDB_TIMEOUT_SECONDS = float(os.getenv("TMDB_TIMEOUT_SECONDS", "12"))
 except ValueError:
     TMDB_TIMEOUT_SECONDS = 12.0
+KINOPOISK_API_KEY = os.getenv("KINOPOISK_API_KEY") or os.getenv("KP_API_KEY")
+KINOPOISK_BASE_URL = os.getenv("KINOPOISK_BASE_URL", "https://api.kinopoisk.dev/v1.4")
+try:
+    KINOPOISK_TIMEOUT_SECONDS = float(os.getenv("KINOPOISK_TIMEOUT_SECONDS", "10"))
+except ValueError:
+    KINOPOISK_TIMEOUT_SECONDS = 10.0
 OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 OMDB_BASE_URL = os.getenv("OMDB_BASE_URL", "https://www.omdbapi.com/")
 try:
     OMDB_TIMEOUT_SECONDS = float(os.getenv("OMDB_TIMEOUT_SECONDS", "8"))
 except ValueError:
     OMDB_TIMEOUT_SECONDS = 8.0
+try:
+    EXTERNAL_API_MAX_RETRIES = int(os.getenv("EXTERNAL_API_MAX_RETRIES", "3"))
+except ValueError:
+    EXTERNAL_API_MAX_RETRIES = 3
+try:
+    EXTERNAL_API_RETRY_BASE_DELAY_SECONDS = float(
+        os.getenv("EXTERNAL_API_RETRY_BASE_DELAY_SECONDS", "1.1")
+    )
+except ValueError:
+    EXTERNAL_API_RETRY_BASE_DELAY_SECONDS = 1.1
 try:
     SHEETS_THREAD_TIMEOUT_SECONDS = float(os.getenv("SHEETS_THREAD_TIMEOUT_SECONDS", "15"))
 except ValueError:

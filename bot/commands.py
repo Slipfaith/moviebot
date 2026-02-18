@@ -7,6 +7,7 @@ from typing import Dict, Tuple
 COMMAND_START = "start"
 COMMAND_HELP = "help"
 COMMAND_MENU = "menu"
+COMMAND_DIAG = "diag"
 COMMAND_AI = "ai"
 COMMAND_RECOMMEND = "recommend"
 COMMAND_ADD = "add"
@@ -25,6 +26,7 @@ BASE_COMMANDS = (
     COMMAND_START,
     COMMAND_HELP,
     COMMAND_MENU,
+    COMMAND_DIAG,
 )
 
 AI_COMMANDS = (
@@ -51,6 +53,7 @@ REGISTRY_ORDER = (
     COMMAND_START,
     COMMAND_HELP,
     COMMAND_MENU,
+    COMMAND_DIAG,
     COMMAND_AI,
     COMMAND_RECOMMEND,
     COMMAND_FIND,
@@ -76,6 +79,7 @@ HELP_COMMAND_ORDER = (
     COMMAND_RANDOM,
     COMMAND_OWNER,
     COMMAND_AI,
+    COMMAND_DIAG,
     COMMAND_MENU,
     COMMAND_HELP,
     COMMAND_CANCEL,
@@ -93,6 +97,7 @@ HELP_COMMAND_SPECS: Dict[str, Tuple[str, str]] = {
     COMMAND_RANDOM: ("", "случайный фильм"),
     COMMAND_OWNER: (" <муж|жена>", "подборка по владельцу"),
     COMMAND_AI: (" <вопрос>", "спросить AI"),
+    COMMAND_DIAG: ("", "диагностика сервисов"),
     COMMAND_MENU: ("", "меню"),
     COMMAND_HELP: ("", "помощь"),
     COMMAND_CANCEL: ("", "отменить добавление"),
@@ -116,6 +121,7 @@ __all__ = [
     "COMMAND_START",
     "COMMAND_HELP",
     "COMMAND_MENU",
+    "COMMAND_DIAG",
     "COMMAND_AI",
     "COMMAND_RECOMMEND",
     "COMMAND_ADD",

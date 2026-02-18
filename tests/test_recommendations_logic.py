@@ -6,6 +6,7 @@ import unittest
 
 from core.recommendations import (
     _pick_best_seed_item,
+    _query_terms,
     _reason_from_shared_genres,
     _shared_preferred_genres,
 )
@@ -34,6 +35,12 @@ class RecommendationsLogicTests(unittest.TestCase):
         self.assertIsNotNone(best)
         if best is not None:
             self.assertEqual(best.get("id"), 2)
+
+    def test_query_terms_extracts_meaningful_words(self) -> None:
+        terms = _query_terms("5 лучших фильмов про выживание на острове")
+        self.assertIn("выживание", terms)
+        self.assertIn("острове", terms)
+        self.assertNotIn("фильмов", terms)
 
 
 if __name__ == "__main__":

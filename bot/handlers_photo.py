@@ -39,6 +39,7 @@ from bot.ui_texts import (
 )
 from core.gemini import (
     GeminiError,
+    generate_gemini_reply,
     generate_gemini_reply_with_image,
     is_gemini_enabled,
 )
@@ -48,6 +49,7 @@ from core.recommendations import lookup_omdb_details
 logger = logging.getLogger(__name__)
 _PHOTO_PREFILL_KEY = "photo_add_entry"
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
+_LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 def _extract_year_from_text(raw: str) -> int | None:
@@ -60,6 +62,59 @@ def _extract_year_from_text(raw: str) -> int | None:
         return None
     value = int(match.group(1))
     return value if 1888 <= value <= 2100 else None
+
+
+def _needs_translation_to_russian(text: str) -> bool:
+    normalized = (text or "").strip()
+    if normalized.lower() == "n/a":
+        return False
+    return bool(normalized and _LATIN_RE.search(normalized))
+
+
+def _translate_omdb_fields_to_russian(
+    genre: str,
+    plot: str,
+) -> tuple[str, str]:
+    src_genre = (genre or "").strip()
+    src_plot = (plot or "").strip()
+    need_genre = _needs_translation_to_russian(src_genre)
+    need_plot = _needs_translation_to_russian(src_plot)
+    if not (need_genre or need_plot):
+        return src_genre, src_plot
+
+    prompt = (
+        "Переведи на русский язык значения полей из JSON.\n"
+        "Верни строго JSON без markdown и комментариев:\n"
+        '{"genre_ru":"", "plot_ru":""}\n'
+        "Сохрани смысл, названия жанров переведи естественно.\n"
+        "Если поле пустое, оставь пустую строку.\n\n"
+        f'genre: "{src_genre if need_genre else ""}"\n'
+        f'plot: "{src_plot if need_plot else ""}"'
+    )
+
+    try:
+        answer = generate_gemini_reply(
+            prompt,
+            temperature=0.1,
+            max_output_tokens=420,
+        )
+    except GeminiError as exc:
+        logger.warning("GEMINI TRANSLATE ERROR: %s %s", type(exc).__name__, exc)
+        return src_genre, src_plot
+    except Exception as exc:
+        logger.warning("TRANSLATE ERROR: %s %s", type(exc).__name__, exc)
+        return src_genre, src_plot
+
+    parsed = _extract_json_dict(answer)
+    if not parsed:
+        return src_genre, src_plot
+
+    genre_ru = str(parsed.get("genre_ru") or "").strip()
+    plot_ru = str(parsed.get("plot_ru") or "").strip()
+    return (
+        genre_ru or src_genre,
+        plot_ru or src_plot,
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -149,6 +204,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             genre = (details.get("Genre") or "").strip()
             imdb_rating = _normalize_rating(details.get("imdbRating") or "")
             plot = (details.get("Plot") or "").strip()
+            genre, plot = await asyncio.to_thread(
+                _translate_omdb_fields_to_russian,
+                genre,
+                plot,
+            )
+            if genre.lower() == "n/a":
+                genre = ""
+            if plot.lower() == "n/a":
+                plot = ""
             if genre and genre.lower() != "n/a":
                 lines.append(PHOTO_GENRES_TEMPLATE.format(genre=html.escape(genre)))
             if imdb_rating > 0:
@@ -168,7 +232,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         prefill_entry = {
             "film": title.strip(),
             "year": str(year) if year else "",
-            "genre": (details.get("Genre") or "").strip() if details else "",
+            "genre": genre if details else "",
             "rating": "",
             "comment": reason or "",
             "type": prefill_type,

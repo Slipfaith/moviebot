@@ -16,6 +16,7 @@ from bot.commands import (
     COMMAND_HELP,
     COMMAND_LIST,
     COMMAND_MENU,
+    COMMAND_DIAG,
     COMMAND_OWNER,
     COMMAND_RANDOM,
     COMMAND_RECENT,
@@ -31,6 +32,7 @@ from bot.handlers_add_flow import build_add_flow_handler
 from bot.handlers_ai_random import random_command
 from bot.handlers_ai_recommend import ai_command, recommend_command
 from bot.handlers_base import handle_callback, handle_message, help_command, menu_command, start_command
+from bot.handlers_diag import diag_command
 from bot.handlers_library_lists import list_command, recent_command, top_command
 from bot.handlers_library_queries import find_command, owner_command, search_command
 from bot.handlers_photo import handle_photo
@@ -41,6 +43,7 @@ _COMMAND_CALLBACKS = {
     COMMAND_START: start_command,
     COMMAND_HELP: help_command,
     COMMAND_MENU: menu_command,
+    COMMAND_DIAG: diag_command,
     COMMAND_AI: ai_command,
     COMMAND_RECOMMEND: recommend_command,
     COMMAND_FIND: find_command,

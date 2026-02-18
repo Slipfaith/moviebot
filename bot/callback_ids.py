@@ -49,6 +49,14 @@ ADD_FLOW_OWNER_SKIP = "add_flow:owner:skip"
 ADD_FLOW_CONFIRM_SAVE = "add_flow:confirm:save"
 ADD_FLOW_CONFIRM_CANCEL = "add_flow:confirm:cancel"
 ADD_FLOW_FROM_POSTER = "add_flow:from_poster"
+ADD_FLOW_EDIT_TEXT_PREFIX = "add_flow:edit_text:"
+ADD_FLOW_EDIT_OPEN_TYPE = "add_flow:edit_open:type"
+ADD_FLOW_EDIT_OPEN_REC = "add_flow:edit_open:rec"
+ADD_FLOW_EDIT_OPEN_OWNER = "add_flow:edit_open:owner"
+ADD_FLOW_EDIT_SET_TYPE_PREFIX = "add_flow:edit_set:type:"
+ADD_FLOW_EDIT_SET_REC_PREFIX = "add_flow:edit_set:rec:"
+ADD_FLOW_EDIT_SET_OWNER_PREFIX = "add_flow:edit_set:owner:"
+ADD_FLOW_EDIT_BACK = "add_flow:edit_back"
 ADD_FLOW_VOICE_CLARIFY_TEXT = "add_flow:voice:clarify_text"
 ADD_FLOW_VOICE_CLARIFY_VOICE = "add_flow:voice:clarify_voice"
 ADD_FLOW_VOICE_CANCEL = "add_flow:voice:cancel"
@@ -61,6 +69,12 @@ PATTERN_ADD_FLOW_OWNER = r"^add_flow:owner:(husband|wife|skip)$"
 PATTERN_ADD_FLOW_CONFIRM_SAVE = r"^add_flow:confirm:save$"
 PATTERN_ADD_FLOW_CONFIRM_CANCEL = r"^add_flow:confirm:cancel$"
 PATTERN_ADD_FLOW_FROM_POSTER = r"^add_flow:from_poster$"
+PATTERN_ADD_FLOW_EDIT_TEXT = r"^add_flow:edit_text:(film|year|genre|rating|comment)$"
+PATTERN_ADD_FLOW_EDIT_OPEN = r"^add_flow:edit_open:(type|rec|owner)$"
+PATTERN_ADD_FLOW_EDIT_SET_TYPE = r"^add_flow:edit_set:type:(film|series)$"
+PATTERN_ADD_FLOW_EDIT_SET_REC = r"^add_flow:edit_set:rec:(recommend|ok|skip)$"
+PATTERN_ADD_FLOW_EDIT_SET_OWNER = r"^add_flow:edit_set:owner:(husband|wife|skip)$"
+PATTERN_ADD_FLOW_EDIT_BACK = r"^add_flow:edit_back$"
 PATTERN_ADD_FLOW_VOICE_CLARIFY_HINT = r"^add_flow:voice:clarify_(text|voice)$"
 PATTERN_ADD_FLOW_VOICE_CANCEL = r"^add_flow:voice:cancel$"
 
@@ -137,6 +151,14 @@ __all__ = [
     "ADD_FLOW_CONFIRM_SAVE",
     "ADD_FLOW_CONFIRM_CANCEL",
     "ADD_FLOW_FROM_POSTER",
+    "ADD_FLOW_EDIT_TEXT_PREFIX",
+    "ADD_FLOW_EDIT_OPEN_TYPE",
+    "ADD_FLOW_EDIT_OPEN_REC",
+    "ADD_FLOW_EDIT_OPEN_OWNER",
+    "ADD_FLOW_EDIT_SET_TYPE_PREFIX",
+    "ADD_FLOW_EDIT_SET_REC_PREFIX",
+    "ADD_FLOW_EDIT_SET_OWNER_PREFIX",
+    "ADD_FLOW_EDIT_BACK",
     "ADD_FLOW_VOICE_CLARIFY_TEXT",
     "ADD_FLOW_VOICE_CLARIFY_VOICE",
     "ADD_FLOW_VOICE_CANCEL",
@@ -148,6 +170,12 @@ __all__ = [
     "PATTERN_ADD_FLOW_CONFIRM_SAVE",
     "PATTERN_ADD_FLOW_CONFIRM_CANCEL",
     "PATTERN_ADD_FLOW_FROM_POSTER",
+    "PATTERN_ADD_FLOW_EDIT_TEXT",
+    "PATTERN_ADD_FLOW_EDIT_OPEN",
+    "PATTERN_ADD_FLOW_EDIT_SET_TYPE",
+    "PATTERN_ADD_FLOW_EDIT_SET_REC",
+    "PATTERN_ADD_FLOW_EDIT_SET_OWNER",
+    "PATTERN_ADD_FLOW_EDIT_BACK",
     "PATTERN_ADD_FLOW_VOICE_CLARIFY_HINT",
     "PATTERN_ADD_FLOW_VOICE_CANCEL",
     "winner_month_callback",

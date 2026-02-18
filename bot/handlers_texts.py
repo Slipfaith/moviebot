@@ -37,7 +37,9 @@ ADD_USAGE_TEXT = (
     ADD_OWNER,
     ADD_CONFIRM,
     ADD_VOICE_CLARIFY,
-) = range(10)
+    ADD_POSTER_EDIT,
+    ADD_POSTER_EDIT_TEXT,
+) = range(12)
 
 __all__ = [
     "HELP_TEXT",
@@ -53,4 +55,6 @@ __all__ = [
     "ADD_OWNER",
     "ADD_CONFIRM",
     "ADD_VOICE_CLARIFY",
+    "ADD_POSTER_EDIT",
+    "ADD_POSTER_EDIT_TEXT",
 ]

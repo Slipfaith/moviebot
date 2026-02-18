@@ -10,6 +10,8 @@ from telegram.ext import Application
 from core.config import SHEETS_THREAD_TIMEOUT_SECONDS
 from core.gsheet import invalidate_records_cache
 from core.offline_queue import flush_offline_entries
+from core.runtime_monitor import record_error
+from bot.handlers_sheet_io import invalidate_sheet_index_cache
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,13 @@ class PatchedApplication(Application):
     :class:`AttributeError` because instances don't have a ``__dict__``.
     """
 
-    __slots__ = Application.__slots__ + ("_Application__stop_running_marker",)
+    _base_slots = tuple(Application.__slots__)
+    _extra_slots = []
+    if "_Application__stop_running_marker" not in _base_slots:
+        _extra_slots.append("_Application__stop_running_marker")
+    if "__weakref__" not in _base_slots:
+        _extra_slots.append("__weakref__")
+    __slots__ = _base_slots + tuple(_extra_slots)
 
 
 async def sync_offline_entries(app: Application) -> None:
@@ -37,9 +45,11 @@ async def sync_offline_entries(app: Application) -> None:
             "Offline sync timed out after %.1f seconds.",
             SHEETS_THREAD_TIMEOUT_SECONDS,
         )
+        record_error("offline_sync", "Timeout while syncing offline entries")
         return
     except Exception:
         logger.exception("Offline sync failed.")
+        record_error("offline_sync", "Unexpected offline sync failure")
         return
 
     if result.error:
@@ -48,9 +58,11 @@ async def sync_offline_entries(app: Application) -> None:
             type(result.error).__name__,
             result.error,
         )
+        record_error("gsheet", result.error)
 
     if result.processed:
         invalidate_records_cache()
+        invalidate_sheet_index_cache()
         logger.info("Synced %s offline entries to Google Sheet.", result.processed)
         for chat_id in result.chat_ids:
             try:
@@ -78,8 +90,10 @@ async def on_error(update, context) -> None:
             error,
             exc_info=(type(error), error, error.__traceback__),
         )
+        record_error("telegram", error)
     else:
         logger.error("BOT ERROR: %s", error)
+        record_error("telegram", str(error))
 
     if update and getattr(update, "effective_message", None):
         try:

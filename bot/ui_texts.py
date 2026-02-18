@@ -109,6 +109,39 @@ ADD_FLOW_PREVIEW_TEMPLATE = (
     "Владелец: {owner}\n"
     "Комментарий: {comment}"
 )
+ADD_FLOW_POSTER_EDITOR_TEMPLATE = (
+    "🧩 <b>Карточка из постера</b>\n"
+    "Нажмите нужное поле ниже, чтобы исправить его перед сохранением.\n\n"
+    "🎬 <b>{film}</b> ({year})\n"
+    "Жанр: {genre}\n"
+    "Оценка: {rating}/10\n"
+    "Тип: {entry_type}\n"
+    "Рекомендация: {recommendation}\n"
+    "Владелец: {owner}\n"
+    "Комментарий: {comment}"
+)
+ADD_FLOW_POSTER_EDITOR_NOTE_TEMPLATE = "\n\nℹ️ {note}"
+ADD_FLOW_EDIT_PROMPT_TITLE = "Введите название фильма:"
+ADD_FLOW_EDIT_PROMPT_YEAR = "Введите год (4 цифры, например 2014):"
+ADD_FLOW_EDIT_PROMPT_GENRE = "Введите жанр:"
+ADD_FLOW_EDIT_PROMPT_RATING = "Введите оценку от 1 до 10:"
+ADD_FLOW_EDIT_PROMPT_COMMENT = "Введите комментарий (или '-' чтобы очистить):"
+ADD_FLOW_EDIT_PROMPT_TYPE = "Выберите тип:"
+ADD_FLOW_EDIT_PROMPT_RECOMMENDATION = "Выберите рекомендацию:"
+ADD_FLOW_EDIT_PROMPT_OWNER = "Кто добавил?"
+ADD_FLOW_EDIT_MSG_SELECT_FIELD_FIRST = "Сначала выберите поле кнопкой ниже."
+ADD_FLOW_EDIT_MSG_INVALID_YEAR = "Год должен быть из 4 цифр (например, 2014)."
+ADD_FLOW_EDIT_MSG_INVALID_RATING = "Оценка должна быть числом от 1 до 10."
+ADD_FLOW_EDIT_MSG_REQUIRED_TEMPLATE = "Заполните обязательные поля: {missing}."
+ADD_FLOW_BTN_EDIT_TITLE = "🎬 Название"
+ADD_FLOW_BTN_EDIT_YEAR = "📅 Год"
+ADD_FLOW_BTN_EDIT_GENRE = "🎭 Жанр"
+ADD_FLOW_BTN_EDIT_RATING = "⭐ Оценка"
+ADD_FLOW_BTN_EDIT_COMMENT = "📝 Комментарий"
+ADD_FLOW_BTN_EDIT_TYPE = "🎞 Тип"
+ADD_FLOW_BTN_EDIT_RECOMMENDATION = "💬 Рекомендация"
+ADD_FLOW_BTN_EDIT_OWNER = "👤 Кто добавил"
+ADD_FLOW_BTN_EDIT_BACK = "⬅️ Назад"
 VOICE_ADD_MSG_NEEDS_MISTRAL_KEY = "Для голосового добавления нужен MISTRALAPI в .env."
 VOICE_ADD_MSG_TRANSCRIBE_FAILED = "Не удалось распознать голосовое сообщение. Попробуйте ещё раз."
 VOICE_ADD_MSG_PARSE_FAILED = (
@@ -290,6 +323,29 @@ __all__ = [
     "ADD_FLOW_BTN_OWNER_WIFE",
     "ADD_FLOW_BTN_OWNER_SKIP",
     "ADD_FLOW_PREVIEW_TEMPLATE",
+    "ADD_FLOW_POSTER_EDITOR_TEMPLATE",
+    "ADD_FLOW_POSTER_EDITOR_NOTE_TEMPLATE",
+    "ADD_FLOW_EDIT_PROMPT_TITLE",
+    "ADD_FLOW_EDIT_PROMPT_YEAR",
+    "ADD_FLOW_EDIT_PROMPT_GENRE",
+    "ADD_FLOW_EDIT_PROMPT_RATING",
+    "ADD_FLOW_EDIT_PROMPT_COMMENT",
+    "ADD_FLOW_EDIT_PROMPT_TYPE",
+    "ADD_FLOW_EDIT_PROMPT_RECOMMENDATION",
+    "ADD_FLOW_EDIT_PROMPT_OWNER",
+    "ADD_FLOW_EDIT_MSG_SELECT_FIELD_FIRST",
+    "ADD_FLOW_EDIT_MSG_INVALID_YEAR",
+    "ADD_FLOW_EDIT_MSG_INVALID_RATING",
+    "ADD_FLOW_EDIT_MSG_REQUIRED_TEMPLATE",
+    "ADD_FLOW_BTN_EDIT_TITLE",
+    "ADD_FLOW_BTN_EDIT_YEAR",
+    "ADD_FLOW_BTN_EDIT_GENRE",
+    "ADD_FLOW_BTN_EDIT_RATING",
+    "ADD_FLOW_BTN_EDIT_COMMENT",
+    "ADD_FLOW_BTN_EDIT_TYPE",
+    "ADD_FLOW_BTN_EDIT_RECOMMENDATION",
+    "ADD_FLOW_BTN_EDIT_OWNER",
+    "ADD_FLOW_BTN_EDIT_BACK",
     "VOICE_ADD_MSG_NEEDS_MISTRAL_KEY",
     "VOICE_ADD_MSG_TRANSCRIBE_FAILED",
     "VOICE_ADD_MSG_PARSE_FAILED",

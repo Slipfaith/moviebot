@@ -16,6 +16,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import requests
 
 from core.config import (
+    EXTERNAL_API_MAX_RETRIES,
+    EXTERNAL_API_RETRY_BASE_DELAY_SECONDS,
+    KINOPOISK_API_KEY,
+    KINOPOISK_BASE_URL,
+    KINOPOISK_TIMEOUT_SECONDS,
     OMDB_API_KEY,
     OMDB_BASE_URL,
     OMDB_TIMEOUT_SECONDS,
@@ -24,11 +29,13 @@ from core.config import (
     TMDB_REGION,
     TMDB_TIMEOUT_SECONDS,
 )
+from core.runtime_monitor import record_error
 
 _TMDB_BASE_URLS = (
     "https://api.themoviedb.org/3",
     "https://api.tmdb.org/3",
 )
+_KINOPOISK_SEARCH_URL = f"{KINOPOISK_BASE_URL.rstrip('/')}/movie/search"
 _TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 _TMDB_GENRE_CACHE_TTL_SECONDS = 30 * 60
 _TMDB_GENRE_CACHE: Optional[Tuple[float, Dict[int, str]]] = None
@@ -40,6 +47,40 @@ _TMDB_CANDIDATES_CACHE: Dict[Tuple[object, ...], Tuple[float, List["CandidateMov
 _TMDB_CANDIDATES_CACHE_LOCK = threading.RLock()
 _OMDB_CACHE_TTL_SECONDS = 24 * 60 * 60
 _OMDB_CACHE: Dict[str, Tuple[float, Optional[Dict[str, str]]]] = {}
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_QUERY_STOPWORDS = {
+    "и",
+    "или",
+    "на",
+    "в",
+    "во",
+    "с",
+    "со",
+    "к",
+    "по",
+    "про",
+    "для",
+    "что",
+    "как",
+    "мне",
+    "мой",
+    "моя",
+    "мои",
+    "наши",
+    "лучшие",
+    "лучших",
+    "фильмы",
+    "фильмов",
+    "фильм",
+    "сериалы",
+    "сериал",
+    "топ",
+    "recommend",
+    "movie",
+    "movies",
+    "best",
+    "about",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +122,16 @@ def tmdb_enabled() -> bool:
     return bool(TMDB_API_KEY)
 
 
+def probe_tmdb_status() -> tuple[bool, str]:
+    if not TMDB_API_KEY:
+        return False, "disabled"
+    try:
+        genre_map = _tmdb_genre_map()
+        return True, f"ok (genres={len(genre_map)})"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def _first_non_empty(row: Dict[str, str], *keys: str) -> str:
     for key in keys:
         value = row.get(key)
@@ -112,6 +163,22 @@ def _parse_year(value: str) -> Optional[int]:
     return None
 
 
+def _query_terms(query: str, *, max_terms: int = 6) -> List[str]:
+    tokens = re.findall(r"[A-Za-zА-Яа-я0-9]{3,}", (query or "").lower())
+    if not tokens:
+        return []
+    result: List[str] = []
+    seen: Set[str] = set()
+    for token in tokens:
+        if token in _QUERY_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+        if len(result) >= max_terms:
+            break
+    return result
+
+
 def _split_genres(value: str) -> List[str]:
     raw = (value or "").strip()
     if not raw:
@@ -135,6 +202,76 @@ def _host_resolves_to_loopback(host: str) -> bool:
         if ip.is_loopback:
             return True
     return False
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    base = max(EXTERNAL_API_RETRY_BASE_DELAY_SECONDS, 0.1)
+    return base * (2 ** max(attempt - 1, 0))
+
+
+def _request_json_with_retry(
+    url: str,
+    *,
+    params: Optional[Dict[str, object]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout_seconds: float,
+    source: str,
+) -> Dict:
+    last_error: Optional[Exception] = None
+    max_retries = max(EXTERNAL_API_MAX_RETRIES, 1)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < max_retries:
+                time.sleep(_retry_delay_seconds(attempt))
+                continue
+            record_error(source, exc)
+            raise
+
+        if response.status_code in _RETRYABLE_STATUS_CODES:
+            last_error = RuntimeError(f"HTTP {response.status_code}")
+            if attempt < max_retries:
+                time.sleep(_retry_delay_seconds(attempt))
+                continue
+            error = RuntimeError(f"{source} temporary error: HTTP {response.status_code}")
+            record_error(source, error)
+            raise error
+
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            last_error = exc
+            record_error(source, exc)
+            raise
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            last_error = exc
+            if attempt < max_retries:
+                time.sleep(_retry_delay_seconds(attempt))
+                continue
+            record_error(source, exc)
+            raise
+        if isinstance(payload, dict):
+            return payload
+        error = RuntimeError(f"{source} returned non-object JSON payload")
+        record_error(source, error)
+        raise error
+
+    if last_error:
+        raise last_error
+    error = RuntimeError(f"{source} request failed")
+    record_error(source, error)
+    raise error
 
 
 def build_taste_profile(records: Sequence[Dict[str, str]]) -> TasteProfile:
@@ -204,21 +341,23 @@ def _tmdb_get(path: str, **params) -> Dict:
         if _host_resolves_to_loopback(host):
             continue
         try:
-            response = requests.get(
+            return _request_json_with_retry(
                 f"{base_url}{path}",
                 params=query,
-                timeout=TMDB_TIMEOUT_SECONDS,
+                timeout_seconds=TMDB_TIMEOUT_SECONDS,
+                source="tmdb",
             )
-            response.raise_for_status()
-            return response.json()
         except Exception as exc:
             last_error = exc
             continue
 
     _TMDB_UNAVAILABLE_UNTIL_MONO = time.monotonic() + _TMDB_UNAVAILABLE_COOLDOWN_SECONDS
     if last_error:
+        record_error("tmdb", last_error)
         raise last_error
-    raise RuntimeError("TMDB hosts are unavailable (loopback DNS or connection failure).")
+    error = RuntimeError("TMDB hosts are unavailable (loopback DNS or connection failure).")
+    record_error("tmdb", error)
+    raise error
 
 
 def _tmdb_genre_map() -> Dict[int, str]:
@@ -426,6 +565,7 @@ def _movie_from_tmdb_item(
         if not normalized_path.startswith("/"):
             normalized_path = f"/{normalized_path}"
         poster_url = f"{_TMDB_POSTER_BASE_URL}{normalized_path}"
+    overview = str(item.get("overview") or "").strip()
 
     return CandidateMovie(
         tmdb_id=movie_id,
@@ -436,6 +576,7 @@ def _movie_from_tmdb_item(
         genres=genres,
         score=score,
         reason=reason,
+        omdb_plot=overview,
         poster_url=poster_url,
     )
 
@@ -467,15 +608,15 @@ def _omdb_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
     if year:
         params["y"] = str(year)
     try:
-        response = requests.get(
+        payload = _request_json_with_retry(
             OMDB_BASE_URL,
             params=params,
-            timeout=OMDB_TIMEOUT_SECONDS,
+            timeout_seconds=OMDB_TIMEOUT_SECONDS,
+            source="omdb",
         )
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:
         logger.error("OMDB ERROR: %s %s", type(exc).__name__, exc)
+        record_error("omdb", exc)
         _OMDB_CACHE[cache_key] = (now + 60, None)
         return None
 
@@ -484,15 +625,15 @@ def _omdb_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
         if "y" in params:
             try:
                 retry_params = {"apikey": OMDB_API_KEY, "t": title}
-                retry_response = requests.get(
+                payload = _request_json_with_retry(
                     OMDB_BASE_URL,
                     params=retry_params,
-                    timeout=OMDB_TIMEOUT_SECONDS,
+                    timeout_seconds=OMDB_TIMEOUT_SECONDS,
+                    source="omdb",
                 )
-                retry_response.raise_for_status()
-                payload = retry_response.json()
             except Exception as exc:
                 logger.error("OMDB ERROR: %s %s", type(exc).__name__, exc)
+                record_error("omdb", exc)
                 payload = {"Response": "False"}
 
     if str(payload.get("Response", "")).lower() != "true":
@@ -548,11 +689,269 @@ def _enrich_candidates_with_omdb(
                 logger.error("OMDB ENRICH ERROR: %s %s", type(exc).__name__, exc)
 
 
-def lookup_omdb_details(title: str, year: Optional[int] = None) -> Optional[Dict[str, str]]:
+def kinopoisk_enabled() -> bool:
+    return bool(KINOPOISK_API_KEY)
+
+
+def _tmdb_lookup_details(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
+    if not tmdb_enabled():
+        return None
+    try:
+        search_payload = _tmdb_get(
+            "/search/movie",
+            query=title,
+            include_adult="false",
+            page=1,
+            year=year if year else None,
+        )
+    except Exception:
+        return None
+
+    search_results = search_payload.get("results", [])
+    if not isinstance(search_results, list) or not search_results:
+        return None
+    best_item = _pick_best_seed_item(
+        search_results,
+        seed_title=title,
+        seed_year=year,
+    )
+    if not best_item:
+        raw_first = search_results[0]
+        best_item = raw_first if isinstance(raw_first, dict) else None
+    if not best_item:
+        return None
+
+    details = best_item
+    movie_id = details.get("id")
+    if isinstance(movie_id, int):
+        try:
+            details_payload = _tmdb_get(f"/movie/{movie_id}")
+            if isinstance(details_payload, dict):
+                details = details_payload
+        except Exception:
+            pass
+
+    tmdb_title = str(details.get("title") or details.get("name") or "").strip()
+    tmdb_year = _parse_year(str(details.get("release_date") or ""))
+    genre_names: List[str] = []
+    raw_genres = details.get("genres")
+    if isinstance(raw_genres, list):
+        for item in raw_genres:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if name:
+                    genre_names.append(name)
+
+    plot = str(details.get("overview") or "").strip()
+    poster_url = ""
+    poster_path = str(details.get("poster_path") or "").strip()
+    if poster_path:
+        if not poster_path.startswith("/"):
+            poster_path = f"/{poster_path}"
+        poster_url = f"{_TMDB_POSTER_BASE_URL}{poster_path}"
+
+    return {
+        "Title": tmdb_title,
+        "Year": str(tmdb_year or ""),
+        "Genre": ", ".join(genre_names),
+        "Type": "movie",
+        # Keep IMDb field empty for TMDB source to avoid wrong labeling.
+        "imdbRating": "",
+        "Plot": plot,
+        "Poster": poster_url,
+        "tmdbRating": f"{_parse_rating(details.get('vote_average')):.1f}",
+    }
+
+
+def _kinopoisk_doc_score(
+    doc: Dict[str, object],
+    *,
+    title_norm: str,
+    year: Optional[int],
+) -> float:
+    score = 0.0
+    candidates = [
+        str(doc.get("name") or "").strip(),
+        str(doc.get("alternativeName") or "").strip(),
+        str(doc.get("enName") or "").strip(),
+    ]
+    for name in candidates:
+        norm = _normalize_title(name)
+        if not norm:
+            continue
+        if norm == title_norm:
+            score = max(score, 6.0)
+        elif title_norm and (title_norm in norm or norm in title_norm):
+            score = max(score, 3.5)
+        else:
+            tokens_a = set(title_norm.split())
+            tokens_b = set(norm.split())
+            if tokens_a and tokens_b:
+                overlap = len(tokens_a & tokens_b) / max(len(tokens_a), 1)
+                score = max(score, overlap * 2.0)
+
+    raw_year = doc.get("year")
+    try:
+        doc_year = int(raw_year) if raw_year is not None else None
+    except (TypeError, ValueError):
+        doc_year = None
+    if year and doc_year:
+        diff = abs(doc_year - year)
+        if diff == 0:
+            score += 2.0
+        elif diff <= 1:
+            score += 1.2
+        elif diff <= 3:
+            score += 0.4
+    return score
+
+
+def _kinopoisk_lookup(title: str, year: Optional[int]) -> Optional[Dict[str, str]]:
+    if not kinopoisk_enabled():
+        return None
+    params: Dict[str, object] = {
+        "query": title,
+        "page": 1,
+        "limit": 8,
+    }
+    headers = {"X-API-KEY": str(KINOPOISK_API_KEY)}
+    try:
+        payload = _request_json_with_retry(
+            _KINOPOISK_SEARCH_URL,
+            params=params,
+            headers=headers,
+            timeout_seconds=KINOPOISK_TIMEOUT_SECONDS,
+            source="kinopoisk",
+        )
+    except Exception:
+        return None
+
+    docs = payload.get("docs")
+    if not isinstance(docs, list) or not docs:
+        return None
+
+    title_norm = _normalize_title(title)
+    best_doc: Optional[Dict[str, object]] = None
+    best_score = -1.0
+    for raw in docs[:8]:
+        if not isinstance(raw, dict):
+            continue
+        score = _kinopoisk_doc_score(raw, title_norm=title_norm, year=year)
+        if score > best_score:
+            best_score = score
+            best_doc = raw
+    if not best_doc:
+        return None
+
+    kp_title = str(
+        best_doc.get("name")
+        or best_doc.get("alternativeName")
+        or best_doc.get("enName")
+        or ""
+    ).strip()
+    raw_year = best_doc.get("year")
+    try:
+        kp_year = int(raw_year) if raw_year is not None else None
+    except (TypeError, ValueError):
+        kp_year = None
+    genre_names: List[str] = []
+    raw_genres = best_doc.get("genres")
+    if isinstance(raw_genres, list):
+        for raw_genre in raw_genres:
+            if isinstance(raw_genre, dict):
+                name = str(raw_genre.get("name") or "").strip()
+                if name:
+                    genre_names.append(name)
+
+    poster_url = ""
+    raw_poster = best_doc.get("poster")
+    if isinstance(raw_poster, dict):
+        poster_url = str(raw_poster.get("url") or raw_poster.get("previewUrl") or "").strip()
+
+    rating_text = ""
+    raw_rating = best_doc.get("rating")
+    if isinstance(raw_rating, dict):
+        imdb = _parse_rating(raw_rating.get("imdb"))
+        kp = _parse_rating(raw_rating.get("kp"))
+        if imdb > 0:
+            rating_text = f"{imdb:.1f}"
+        elif kp > 0:
+            rating_text = f"{kp:.1f}"
+
+    return {
+        "Title": kp_title,
+        "Year": str(kp_year or ""),
+        "Genre": ", ".join(genre_names),
+        "Type": str(best_doc.get("type") or ""),
+        "imdbRating": rating_text,
+        "Plot": str(best_doc.get("description") or best_doc.get("shortDescription") or "").strip(),
+        "Poster": poster_url,
+    }
+
+
+def _merge_details(
+    base: Dict[str, str],
+    extra: Optional[Dict[str, str]],
+    *,
+    overwrite: bool,
+) -> Dict[str, str]:
+    if not extra:
+        return dict(base)
+    merged = dict(base)
+    for key, value in extra.items():
+        normalized = str(value or "").strip()
+        if not normalized or normalized.lower() == "n/a":
+            continue
+        current = str(merged.get(key) or "").strip()
+        if overwrite or not current or current.lower() == "n/a":
+            merged[key] = normalized
+    return merged
+
+
+def lookup_movie_details(title: str, year: Optional[int] = None) -> Optional[Dict[str, str]]:
     normalized = (title or "").strip()
     if not normalized:
         return None
-    return _omdb_lookup(normalized, year)
+
+    result: Dict[str, str] = {}
+    tmdb_details = _tmdb_lookup_details(normalized, year)
+    result = _merge_details(result, tmdb_details, overwrite=False)
+
+    omdb_details = _omdb_lookup(normalized, year)
+    result = _merge_details(result, omdb_details, overwrite=True)
+
+    needs_more = not result or not result.get("Plot") or not result.get("Genre") or not result.get("Poster")
+    if needs_more:
+        kp_details = _kinopoisk_lookup(normalized, year)
+        result = _merge_details(result, kp_details, overwrite=False)
+
+    return result or None
+
+
+def probe_kinopoisk_status() -> tuple[bool, str]:
+    if not kinopoisk_enabled():
+        return False, "disabled"
+    headers = {"X-API-KEY": str(KINOPOISK_API_KEY)}
+    params = {"query": "Matrix", "page": 1, "limit": 1}
+    try:
+        payload = _request_json_with_retry(
+            _KINOPOISK_SEARCH_URL,
+            params=params,
+            headers=headers,
+            timeout_seconds=KINOPOISK_TIMEOUT_SECONDS,
+            source="kinopoisk",
+        )
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    docs = payload.get("docs")
+    if isinstance(docs, list):
+        return True, f"ok (docs={len(docs)})"
+    return True, "ok"
+
+
+def lookup_omdb_details(title: str, year: Optional[int] = None) -> Optional[Dict[str, str]]:
+    # Backward-compatible alias retained for existing call sites.
+    return lookup_movie_details(title, year)
 
 
 def _tmdb_candidates_cache_key(
@@ -631,13 +1030,304 @@ def _store_cached_tmdb_candidates(
         )
 
 
+def _kinopoisk_candidates_for_query(
+    query: str,
+    *,
+    profile: TasteProfile,
+    genre_hint: str,
+    limit: int,
+) -> List[CandidateMovie]:
+    if not kinopoisk_enabled():
+        return []
+    headers = {"X-API-KEY": str(KINOPOISK_API_KEY)}
+    params: Dict[str, object] = {"query": query, "page": 1, "limit": max(limit, 1)}
+    try:
+        payload = _request_json_with_retry(
+            _KINOPOISK_SEARCH_URL,
+            params=params,
+            headers=headers,
+            timeout_seconds=KINOPOISK_TIMEOUT_SECONDS,
+            source="kinopoisk",
+        )
+    except Exception:
+        return []
+
+    docs = payload.get("docs")
+    if not isinstance(docs, list):
+        return []
+
+    result: List[CandidateMovie] = []
+    for raw_doc in docs[: max(limit, 1)]:
+        if not isinstance(raw_doc, dict):
+            continue
+        title = str(
+            raw_doc.get("name")
+            or raw_doc.get("alternativeName")
+            or raw_doc.get("enName")
+            or ""
+        ).strip()
+        if not title:
+            continue
+        if _normalize_title(title) in profile.watched_lookup:
+            continue
+
+        raw_year = raw_doc.get("year")
+        try:
+            year = int(raw_year) if raw_year is not None else None
+        except (TypeError, ValueError):
+            year = None
+
+        genre_names: List[str] = []
+        raw_genres = raw_doc.get("genres")
+        if isinstance(raw_genres, list):
+            for item in raw_genres:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                    if name:
+                        genre_names.append(name)
+        if not genre_names:
+            genre_names = ["—"]
+
+        raw_rating = raw_doc.get("rating")
+        kp_rating = 0.0
+        imdb_rating = 0.0
+        if isinstance(raw_rating, dict):
+            kp_rating = _parse_rating(raw_rating.get("kp"))
+            imdb_rating = _parse_rating(raw_rating.get("imdb"))
+        base_rating = imdb_rating if imdb_rating > 0 else kp_rating
+        popularity_score = min(_parse_rating(raw_doc.get("votes")) / 5000.0, 1.5)
+        score = base_rating * 1.2 + popularity_score
+
+        normalized_genres = {_normalize_title(name) for name in genre_names}
+        normalized_hint = _normalize_title(genre_hint)
+        matched_hint = bool(normalized_hint and normalized_hint in normalized_genres)
+        if matched_hint:
+            score += 2.2
+        if matched_hint:
+            reason = f"совпадает по жанру: {genre_hint}"
+        else:
+            reason = "похоже на ваш профиль"
+
+        raw_id = raw_doc.get("id")
+        if isinstance(raw_id, int):
+            kp_id = raw_id
+        else:
+            kp_id = abs(hash(_normalize_title(title))) % 1_000_000_000 + 1_000_000_000
+
+        poster_url = ""
+        raw_poster = raw_doc.get("poster")
+        if isinstance(raw_poster, dict):
+            poster_url = str(raw_poster.get("url") or raw_poster.get("previewUrl") or "").strip()
+
+        candidate = CandidateMovie(
+            tmdb_id=kp_id,
+            title=title,
+            year=year,
+            tmdb_rating=base_rating,
+            vote_count=0,
+            genres=genre_names,
+            score=score,
+            reason=reason,
+            imdb_rating=imdb_rating if imdb_rating > 0 else None,
+            poster_url=poster_url,
+        )
+        result.append(candidate)
+    return result
+
+
+def _tmdb_query_item_blob(item: Dict[str, object], genre_map: Dict[int, str]) -> str:
+    title = str(item.get("title") or item.get("name") or "").strip()
+    original_title = str(item.get("original_title") or item.get("original_name") or "").strip()
+    overview = str(item.get("overview") or "").strip()
+    genre_names: List[str] = []
+    raw_genres = item.get("genre_ids")
+    if isinstance(raw_genres, list):
+        for raw_id in raw_genres:
+            if isinstance(raw_id, int) and raw_id in genre_map:
+                genre_names.append(genre_map[raw_id])
+    raw = " ".join(part for part in [title, original_title, overview, ", ".join(genre_names)] if part)
+    return _normalize_title(raw)
+
+
+def collect_query_candidates(
+    profile: TasteProfile,
+    query: str,
+    *,
+    limit: int = 80,
+) -> List[CandidateMovie]:
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return []
+
+    search_terms = _query_terms(normalized_query)
+    search_queries: List[str] = [normalized_query]
+    search_queries.extend(search_terms)
+    query_term_keys = {
+        _normalize_title(term)
+        for term in search_terms
+        if _normalize_title(term)
+    }
+
+    preferred_weights = _preferred_genre_weights(profile)
+    preferred_genre_set = set(preferred_weights.keys())
+    candidates: Dict[int, CandidateMovie] = {}
+
+    genre_map: Dict[int, str] = {}
+    if TMDB_API_KEY:
+        try:
+            genre_map = _tmdb_genre_map()
+        except Exception:
+            genre_map = {}
+
+    if TMDB_API_KEY:
+        seen_query_keys: Set[str] = set()
+        for term in search_queries[:7]:
+            term_key = _normalize_title(term)
+            if not term_key or term_key in seen_query_keys:
+                continue
+            seen_query_keys.add(term_key)
+            try:
+                payload = _tmdb_get(
+                    "/search/movie",
+                    query=term,
+                    include_adult="false",
+                    page=1,
+                )
+            except Exception:
+                continue
+
+            items = payload.get("results", [])
+            if not isinstance(items, list):
+                continue
+            for item in items[:20]:
+                if not isinstance(item, dict):
+                    continue
+                item_title = str(item.get("title") or item.get("name") or "")
+                if _normalize_title(item_title) in profile.watched_lookup:
+                    continue
+
+                item_blob = _tmdb_query_item_blob(item, genre_map)
+                if not item_blob:
+                    continue
+
+                direct_term_hit = bool(term_key and term_key in item_blob)
+                semantic_hits = sum(
+                    1
+                    for token in query_term_keys
+                    if token and token in item_blob
+                )
+                if not direct_term_hit and semantic_hits <= 0:
+                    continue
+
+                item_genres = (
+                    item.get("genre_ids")
+                    if isinstance(item.get("genre_ids"), list)
+                    else []
+                )
+                shared_genres = _shared_preferred_genres(
+                    item_genres,
+                    genre_map,
+                    preferred_genre_set,
+                )
+                affinity = _genre_affinity_score(shared_genres, preferred_weights)
+                title_norm = _normalize_title(item_title)
+                query_bonus = 0.0
+                if title_norm and term_key and (
+                    term_key in title_norm or title_norm in term_key
+                ):
+                    query_bonus += 1.8
+                if direct_term_hit:
+                    query_bonus += 1.4
+                query_bonus += float(semantic_hits) * 0.9
+
+                score = (
+                    _parse_rating(item.get("vote_average")) * 1.25
+                    + min(int(item.get("vote_count", 0)) / 4500.0, 2.2)
+                    + affinity * 1.6
+                    + len(shared_genres) * 0.7
+                    + query_bonus
+                    + 2.5
+                )
+                reason = f"по запросу: {term}"
+                if shared_genres:
+                    reason = f"{reason}; жанры: {', '.join(shared_genres[:2])}"
+                candidate = _movie_from_tmdb_item(
+                    item,
+                    genre_map,
+                    reason=reason,
+                    score=score,
+                )
+                if candidate:
+                    _merge_candidate(candidates, candidate)
+
+    # Fallback query candidates via Kinopoisk when TMDB is unavailable or sparse.
+    if kinopoisk_enabled() and len(candidates) < max(8, limit // 3):
+        fallback_terms = search_queries[:4]
+        fallback_hint = (
+            profile.top_genres[0][0]
+            if profile.top_genres and profile.top_genres[0]
+            else "триллер"
+        )
+        for term in fallback_terms:
+            for candidate in _kinopoisk_candidates_for_query(
+                term,
+                profile=profile,
+                genre_hint=fallback_hint,
+                limit=16,
+            ):
+                normalized = _normalize_title(candidate.title)
+                if not normalized:
+                    continue
+                if normalized in profile.watched_lookup:
+                    continue
+                candidate.reason = f"по запросу: {term}"
+                _merge_candidate(candidates, candidate)
+
+    ranked = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
+    _enrich_candidates_with_omdb(ranked, limit=min(12, len(ranked)))
+    ranked.sort(key=lambda item: item.score, reverse=True)
+    return ranked[: max(limit, 1)]
+
+
+def _collect_fallback_candidates(
+    profile: TasteProfile,
+    *,
+    limit: int,
+) -> List[CandidateMovie]:
+    if not kinopoisk_enabled():
+        return []
+
+    top_genres = [genre for genre, _ in profile.top_genres[:4] if genre]
+    if not top_genres:
+        top_genres = ["триллер", "драма"]
+
+    buckets: Dict[str, CandidateMovie] = {}
+    for genre in top_genres:
+        candidates = _kinopoisk_candidates_for_query(
+            genre,
+            profile=profile,
+            genre_hint=genre,
+            limit=20,
+        )
+        for item in candidates:
+            key = _normalize_title(item.title)
+            if not key:
+                continue
+            existing = buckets.get(key)
+            if not existing or item.score > existing.score:
+                buckets[key] = item
+
+    ranked = sorted(buckets.values(), key=lambda item: item.score, reverse=True)
+    return ranked[:limit]
+
+
 def collect_tmdb_candidates(
     profile: TasteProfile,
     *,
     limit: int = 80,
 ) -> List[CandidateMovie]:
     if not TMDB_API_KEY:
-        return []
+        return _collect_fallback_candidates(profile, limit=limit)
     cached = _get_cached_tmdb_candidates(profile, limit)
     if cached is not None:
         return cached
@@ -645,7 +1335,7 @@ def collect_tmdb_candidates(
     try:
         genre_map = _tmdb_genre_map()
     except Exception:
-        return []
+        return _collect_fallback_candidates(profile, limit=limit)
 
     preferred_genres = [genre for genre, _ in profile.top_genres[:5]]
     preferred_genre_ids = _match_genre_ids(preferred_genres, genre_map)
@@ -779,6 +1469,11 @@ def collect_tmdb_candidates(
     _enrich_candidates_with_omdb(ranked, limit=min(12, len(ranked)))
     ranked.sort(key=lambda item: item.score, reverse=True)
     result = ranked[:limit]
+    if not result:
+        fallback = _collect_fallback_candidates(profile, limit=limit)
+        if fallback:
+            _store_cached_tmdb_candidates(profile, limit, fallback)
+            return list(fallback)
     _store_cached_tmdb_candidates(profile, limit, result)
     return list(result)
 

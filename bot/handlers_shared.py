@@ -10,6 +10,8 @@ from bot.handlers_texts import (
     ADD_FILM,
     ADD_GENRE,
     ADD_OWNER,
+    ADD_POSTER_EDIT,
+    ADD_POSTER_EDIT_TEXT,
     ADD_RATING,
     ADD_RECOMMENDATION,
     ADD_TYPE,
@@ -48,6 +50,13 @@ _DELEGATED_NAMES.update(
         "add_flow_genre",
         "add_flow_owner",
         "add_flow_owner_select",
+        "add_flow_poster_edit_text_start",
+        "add_flow_poster_edit_open",
+        "add_flow_poster_edit_set_type",
+        "add_flow_poster_edit_set_recommendation",
+        "add_flow_poster_edit_set_owner",
+        "add_flow_poster_edit_back",
+        "add_flow_poster_edit_text_value",
         "add_flow_rating",
         "add_flow_recommendation",
         "add_flow_recommendation_select",
@@ -139,6 +148,7 @@ _DELEGATED_NAMES.update(
 )
 _DELEGATED_NAMES.update(_pairs("bot.handlers_base", "handle_callback", "handle_message", "help_command", "menu_command", "start_command"))
 _DELEGATED_NAMES.update(_pairs("bot.handlers_stats", "stats_command", "winner_command"))
+_DELEGATED_NAMES.update(_pairs("bot.handlers_diag", "diag_command"))
 _DELEGATED_NAMES.update(_pairs("bot.handlers_photo", "handle_photo"))
 
 
@@ -171,4 +181,6 @@ __all__ = [
     "ADD_OWNER",
     "ADD_CONFIRM",
     "ADD_VOICE_CLARIFY",
+    "ADD_POSTER_EDIT",
+    "ADD_POSTER_EDIT_TEXT",
 ] + list(_DELEGATED_NAMES)
