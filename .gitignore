@@ -1,10 +1,6 @@
-# ==========================================
-# 🧠 PYTHON
-# ==========================================
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 *$py.class
 
 # Virtual environments
@@ -12,42 +8,53 @@ __pycache__/
 venv/
 env/
 ENV/
-*.egg-info/
-.eggs/
 
-# Build and packaging
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build and packaging artifacts
 build/
 dist/
-*.spec
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 *.manifest
-*.dll
-*.pdb
-*.so
-*.dylib
-*.a
 
-# Nuitka / PyInstaller artifacts
-*.exe
-*.msi
-*.bin
-*.manifest
-*.build
-*.dist
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.swp
 
-# ==========================================
-# ⚙️ CONFIG / SECRETS
-# ==========================================
-# Environment files
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.code-workspace
+*.user
+*.iml
+
+# Local env and secrets
 .env
 .env.*
 .envrc
-
-# Credentials & tokens
-*.key
-*.pem
-*.crt
-*.p12
-*.pfx
 secrets.txt
 config_local.py
 config_private.py
@@ -57,84 +64,26 @@ google_service.json
 service_account.json
 *.token
 *.creds
-*.bak
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
 
-# Sensitive folders
+# Sensitive local folders
 data/
 tokens/
 auth/
 private/
 
-# ==========================================
-# 🧩 PROJECT-SPECIFIC (Telegram / Bots)
-# ==========================================
+# Local tool settings
+.claude/settings.local.json
+
+# Project runtime data
+moviebot_token_usage.json
+moviebot_token_usage_backups/
 telegram_report_cache.json
-telegram/config.py
 session.json
 settings.json
-
-# ==========================================
-# 💾 LOGS / TEMP / CACHE
-# ==========================================
-*.log
-*.tmp
-*.bak
-*.swp
-*.zip
-*.tar
-*.gz
-*.7z
-*.rar
-.cache/
-.coverage
-pytest_cache/
-.cache/*
-profile_default/
-ipython_config.py
-
-# ==========================================
-# 📁 IDEs / EDITORS
-# ==========================================
-.vscode/
-.idea/
-*.sublime-*
-*.code-workspace
-*.user
-*.iml
-
-# ==========================================
-# 🪟 SYSTEM FILES
-# ==========================================
-.DS_Store
-Thumbs.db
-ehthumbs.db
-desktop.ini
-$RECYCLE.BIN/
-
-# ==========================================
-# 🧾 DOCUMENTS / DATA EXPORTS
-# ==========================================
-*.txt
-*.xlsx
-*.xlsm
-*.csv
-*.md
-*.pdf
-*.docx
-~$*
-
-# ==========================================
-# 🖼️ MEDIA / RESOURCES
-# ==========================================
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.bmp
-*.ico
-*.svg
-
-# ==========================================
-# 🧪 NOTEBOOKS
-# ==========================================
-.ipynb_checkpoints/
+.tmp_token_usage_tests/
+pytest-cache-files-*/
